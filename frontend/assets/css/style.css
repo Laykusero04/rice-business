@@ -1,0 +1,229 @@
+:root {
+  --rice-green: #2d6a4f;
+  --rice-green-dark: #1b4332;
+  --rice-cream: #f8f6f1;
+  --rice-gold: #c9a227;
+}
+
+body.login-page {
+  min-height: 100vh;
+  background:
+    linear-gradient(160deg, rgba(27, 67, 50, 0.92), rgba(45, 106, 79, 0.85)),
+    url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.06'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--rice-cream);
+  border: none;
+  border-radius: 1rem;
+  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.25);
+}
+
+.login-brand {
+  color: var(--rice-green-dark);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.login-brand span {
+  color: var(--rice-gold);
+}
+
+.btn-rice {
+  background: var(--rice-green);
+  border-color: var(--rice-green);
+  color: #fff;
+}
+
+.btn-rice:hover,
+.btn-rice:focus {
+  background: var(--rice-green-dark);
+  border-color: var(--rice-green-dark);
+  color: #fff;
+}
+
+.form-control:focus {
+  border-color: var(--rice-green);
+  box-shadow: 0 0 0 0.2rem rgba(45, 106, 79, 0.2);
+}
+
+/* App layout + left drawer */
+:root {
+  --drawer-width: 260px;
+  --topbar-height: 56px;
+}
+
+.app-body {
+  min-height: 100vh;
+  background: #f0f2f0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+.app-drawer {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1040;
+  width: var(--drawer-width);
+  height: 100vh;
+  background: linear-gradient(180deg, var(--rice-green-dark), #163528);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  transform: translateX(0);
+  transition: transform 0.25s ease, width 0.25s ease;
+  overflow: hidden;
+}
+
+.drawer-brand {
+  height: var(--topbar-height);
+  padding: 0 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  flex-shrink: 0;
+}
+
+.drawer-brand a {
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.drawer-brand span {
+  color: var(--rice-gold);
+}
+
+.drawer-nav {
+  padding: 0.75rem 0.6rem;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.drawer-nav .nav-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: rgba(255, 255, 255, 0.82);
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.85rem;
+  margin-bottom: 0.15rem;
+  text-decoration: none;
+  border: none;
+  background: transparent;
+  width: 100%;
+  text-align: left;
+  font-size: 0.95rem;
+}
+
+.drawer-nav .nav-link:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.drawer-nav .nav-link.active {
+  background: rgba(201, 162, 39, 0.22);
+  color: #fff;
+  font-weight: 600;
+}
+
+.drawer-nav .nav-link i:first-child {
+  font-size: 1.1rem;
+  width: 1.25rem;
+  text-align: center;
+}
+
+.drawer-nav .nav-link.sub {
+  padding-left: 2.75rem;
+  font-size: 0.9rem;
+}
+
+.nav-submenu {
+  display: none;
+}
+
+.nav-group.is-open .nav-submenu {
+  display: block;
+}
+
+.nav-group .chevron {
+  transition: transform 0.2s ease;
+  font-size: 0.8rem;
+}
+
+.nav-group.is-open .chevron {
+  transform: rotate(180deg);
+}
+
+.drawer-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1035;
+}
+
+.app-main {
+  margin-left: var(--drawer-width);
+  min-height: 100vh;
+  transition: margin-left 0.25s ease;
+}
+
+.app-topbar {
+  height: var(--topbar-height);
+  background: var(--rice-green);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  padding: 0 1rem;
+  position: sticky;
+  top: 0;
+  z-index: 1020;
+}
+
+.app-content {
+  padding: 1.5rem;
+}
+
+.drawer-toggle {
+  line-height: 1;
+  text-decoration: none;
+}
+
+/* Desktop collapsed drawer */
+@media (min-width: 992px) {
+  body.drawer-collapsed .app-drawer {
+    width: 0;
+    transform: translateX(0);
+  }
+
+  body.drawer-collapsed .app-main {
+    margin-left: 0;
+  }
+}
+
+/* Mobile: drawer hidden until opened */
+@media (max-width: 991.98px) {
+  .app-drawer {
+    transform: translateX(-100%);
+  }
+
+  .app-main {
+    margin-left: 0;
+  }
+
+  body.drawer-open .app-drawer {
+    transform: translateX(0);
+  }
+
+  body.drawer-open .drawer-backdrop {
+    display: block;
+  }
+}

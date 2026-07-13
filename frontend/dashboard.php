@@ -1,0 +1,231 @@
+<?php
+require_once __DIR__ . '/../backend/auth.php';
+require_once __DIR__ . '/../backend/conn.php';
+requireLogin();
+
+$user = currentUser();
+$pageTitle = 'Dashboard';
+$activePage = 'dashboard';
+
+$today = date('Y-m-d');
+$monthStart = date('Y-m-01');
+
+$todaySalesStmt = $pdo->prepare(
+    'SELECT COALESCE(SUM(total), 0) FROM sales WHERE sale_date = ?'
+);
+$todaySalesStmt->execute([$today]);
+$todaySales = (float) $todaySalesStmt->fetchColumn();
+
+$monthSalesStmt = $pdo->prepare(
+    'SELECT COALESCE(SUM(total), 0) FROM sales WHERE sale_date BETWEEN ? AND ?'
+);
+$monthSalesStmt->execute([$monthStart, $today]);
+$monthSales = (float) $monthSalesStmt->fetchColumn();
+
+$totalStock = (float) $pdo->query(
+    "SELECT COALESCE(SUM(stock), 0) FROM products WHERE status = 'active'"
+)->fetchColumn();
+
+$lowStockProducts = $pdo->query(
+    "SELECT id, name, stock, minimum_stock
+     FROM products
+     WHERE status = 'active' AND stock <= minimum_stock
+     ORDER BY stock ASC
+     LIMIT 8"
+)->fetchAll();
+
+$recentSales = $pdo->query(
+    "SELECT s.id, s.sale_date, s.total, s.payment_method,
+            COALESCE(c.name, 'Walk-in') AS customer_name
+     FROM sales s
+     LEFT JOIN customers c ON c.id = s.customer_id
+     ORDER BY s.id DESC
+     LIMIT 8"
+)->fetchAll();
+
+$recentPurchases = $pdo->query(
+    'SELECT p.id, p.purchase_date, p.total, s.name AS supplier_name
+     FROM purchases p
+     INNER JOIN suppliers s ON s.id = p.supplier_id
+     ORDER BY p.id DESC
+     LIMIT 5'
+)->fetchAll();
+
+$todayExpensesStmt = $pdo->prepare(
+    'SELECT COALESCE(SUM(amount), 0) FROM expenses WHERE expense_date = ?'
+);
+$todayExpensesStmt->execute([$today]);
+$todayExpenses = (float) $todayExpensesStmt->fetchColumn();
+
+$paymentLabels = [
+    'cash' => 'Cash',
+    'gcash' => 'GCash',
+    'bank' => 'Bank',
+    'credit' => 'Lend (Utang)',
+];
+
+require __DIR__ . '/includes/header.php';
+?>
+
+<?php if (isset($_GET['error']) && $_GET['error'] === 'forbidden'): ?>
+  <div class="alert alert-warning alert-dismissible fade show" role="alert">
+    You do not have permission to access that page.
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  </div>
+<?php endif; ?>
+
+<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+  <div>
+    <h1 class="h3 mb-1">Dashboard</h1>
+    <p class="text-muted mb-0">Welcome back, <?= htmlspecialchars($user['name']) ?>.</p>
+  </div>
+  <a href="sale_new.php" class="btn btn-rice">
+    <i class="bi bi-plus-lg"></i> New Sale
+  </a>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-md-3">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Today's Sales</div>
+      <div class="fs-4 fw-bold text-success">₱<?= number_format($todaySales, 2) ?></div>
+      <div class="small text-muted"><?= htmlspecialchars($today) ?></div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Monthly Sales</div>
+      <div class="fs-4 fw-bold">₱<?= number_format($monthSales, 2) ?></div>
+      <div class="small text-muted"><?= htmlspecialchars(date('F Y')) ?></div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Total Stock</div>
+      <div class="fs-4 fw-bold"><?= number_format($totalStock, 2) ?> kg</div>
+      <div class="small text-muted">Active products</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Today's Expenses</div>
+      <div class="fs-4 fw-bold text-danger">₱<?= number_format($todayExpenses, 2) ?></div>
+      <div class="small text-muted"><?= count($lowStockProducts) ?> low-stock item(s)</div>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-lg-5">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2 class="h6 mb-0">Low Stock Alert</h2>
+        <a href="inventory.php" class="small">View inventory</a>
+      </div>
+      <?php if (count($lowStockProducts) === 0): ?>
+        <p class="text-muted mb-0">All products are above minimum stock.</p>
+      <?php else: ?>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th class="text-end">Stock</th>
+                <th class="text-end">Min</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($lowStockProducts as $item): ?>
+                <tr>
+                  <td class="fw-semibold"><?= htmlspecialchars($item['name']) ?></td>
+                  <td class="text-end text-danger fw-semibold"><?= number_format((float) $item['stock'], 2) ?></td>
+                  <td class="text-end"><?= number_format((float) $item['minimum_stock'], 2) ?></td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      <?php endif; ?>
+    </div>
+  </div>
+
+  <div class="col-lg-7">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2 class="h6 mb-0">Recent Sales</h2>
+        <a href="sales.php" class="small">View all</a>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Date</th>
+              <th>Customer</th>
+              <th>Payment</th>
+              <th class="text-end">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php if (count($recentSales) === 0): ?>
+              <tr>
+                <td colspan="5" class="text-muted text-center">No sales yet.</td>
+              </tr>
+            <?php else: ?>
+              <?php foreach ($recentSales as $sale): ?>
+                <tr>
+                  <td>
+                    <a href="sale_view.php?id=<?= (int) $sale['id'] ?>">#<?= (int) $sale['id'] ?></a>
+                  </td>
+                  <td><?= htmlspecialchars($sale['sale_date']) ?></td>
+                  <td><?= htmlspecialchars($sale['customer_name']) ?></td>
+                  <td><?= htmlspecialchars($paymentLabels[$sale['payment_method']] ?? $sale['payment_method']) ?></td>
+                  <td class="text-end">₱<?= number_format((float) $sale['total'], 2) ?></td>
+                </tr>
+              <?php endforeach; ?>
+            <?php endif; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="bg-white rounded shadow-sm p-3">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="h6 mb-0">Recent Purchases</h2>
+    <a href="purchases.php" class="small">View all</a>
+  </div>
+  <div class="table-responsive">
+    <table class="table table-sm align-middle mb-0">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Date</th>
+          <th>Supplier</th>
+          <th class="text-end">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php if (count($recentPurchases) === 0): ?>
+          <tr>
+            <td colspan="4" class="text-muted text-center">No purchases yet.</td>
+          </tr>
+        <?php else: ?>
+          <?php foreach ($recentPurchases as $purchase): ?>
+            <tr>
+              <td>
+                <a href="purchase_view.php?id=<?= (int) $purchase['id'] ?>">#<?= (int) $purchase['id'] ?></a>
+              </td>
+              <td><?= htmlspecialchars($purchase['purchase_date']) ?></td>
+              <td><?= htmlspecialchars($purchase['supplier_name']) ?></td>
+              <td class="text-end">₱<?= number_format((float) $purchase['total'], 2) ?></td>
+            </tr>
+          <?php endforeach; ?>
+        <?php endif; ?>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<?php require __DIR__ . '/includes/footer.php'; ?>

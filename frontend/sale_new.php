@@ -21,7 +21,7 @@ $flashType = 'danger';
 if (isset($_GET['error'])) {
     $flash = match ($_GET['error']) {
         'required' => 'Sale date is required.',
-        'customer' => 'Select a customer when lending rice (utang).',
+        'customer' => 'Enter the borrower name for walk-in utang, or select a customer.',
         'items' => 'Add at least one valid product line.',
         'stock' => 'Not enough stock for '
             . htmlspecialchars($_GET['product'] ?? 'selected product')
@@ -37,7 +37,9 @@ require __DIR__ . '/includes/header.php';
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
     <h1 class="h3 mb-1">New Sale</h1>
-    <p class="text-muted mb-0">Record a sale or lend rice (utang). Stock decreases automatically.</p>
+    <p class="text-muted mb-0">
+      Just buying? Leave customer as walk-in. Use Lend only for utang.
+    </p>
   </div>
   <a href="sales.php" class="btn btn-outline-secondary">Sales History</a>
 </div>
@@ -59,34 +61,49 @@ require __DIR__ . '/includes/header.php';
       <div class="col-md-4">
         <label for="customerId" class="form-label">Customer</label>
         <select class="form-select" id="customerId" name="customer_id">
-          <option value="">Walk-in customer</option>
+          <option value="">Walk-in / Just buying</option>
           <?php foreach ($customers as $customer): ?>
             <option value="<?= (int) $customer['id'] ?>"><?= htmlspecialchars($customer['name']) ?></option>
           <?php endforeach; ?>
         </select>
-        <div class="form-text" id="customerHint">Required when lending rice.</div>
+        <div class="form-text" id="customerHint">
+          No need to pick a name if they are only buying and paying now.
+        </div>
       </div>
-      <div class="col-md-2">
-        <label for="saleDate" class="form-label">Date</label>
-        <input type="date" class="form-control" id="saleDate" name="sale_date" value="<?= date('Y-m-d') ?>" required>
+      <div class="col-md-4 d-none" id="walkinNameWrap">
+        <label for="walkinName" class="form-label">Borrower name</label>
+        <input
+          type="text"
+          class="form-control"
+          id="walkinName"
+          name="walkin_name"
+          maxlength="100"
+          placeholder="Who is borrowing the rice?"
+        >
+        <div class="form-text">Only needed for utang so you know who owes you.</div>
       </div>
-      <div class="col-md-3">
+      <div class="col-md-4">
         <label for="paymentMethod" class="form-label">Payment</label>
         <select class="form-select" id="paymentMethod" name="payment_method" required>
-          <option value="cash">Cash</option>
-          <option value="gcash">GCash</option>
-          <option value="bank">Bank Transfer</option>
+          <option value="cash">Cash (paid)</option>
+          <option value="gcash">GCash (paid)</option>
+          <option value="bank">Bank Transfer (paid)</option>
           <option value="credit">Lend (Utang)</option>
         </select>
       </div>
-      <div class="col-md-3">
+      <div class="col-md-4">
+        <label for="saleDate" class="form-label">Date</label>
+        <input type="date" class="form-control" id="saleDate" name="sale_date" value="<?= date('Y-m-d') ?>" required>
+      </div>
+      <div class="col-md-8">
         <label for="notes" class="form-label">Notes</label>
         <input type="text" class="form-control" id="notes" name="notes" placeholder="Optional">
       </div>
     </div>
 
     <div class="alert alert-warning d-none mb-4" id="lendNotice">
-      This is a <strong>lend / utang</strong>. Stock will still be deducted. Customer must pay later.
+      This is a <strong>lend / utang</strong> (not a normal paid sale). Stock is deducted now; money comes later.
+      If they are not in your customer list, type their name in <strong>Borrower name</strong>.
     </div>
 
     <div class="d-flex justify-content-between align-items-center mb-2">
@@ -164,6 +181,8 @@ require __DIR__ . '/includes/header.php';
     const paymentMethod = document.getElementById('paymentMethod');
     const customerId = document.getElementById('customerId');
     const lendNotice = document.getElementById('lendNotice');
+    const walkinNameWrap = document.getElementById('walkinNameWrap');
+    const walkinName = document.getElementById('walkinName');
     const customerHint = document.getElementById('customerHint');
 
     function formatMoney(value) {
@@ -175,9 +194,16 @@ require __DIR__ . '/includes/header.php';
 
     function updateLendUi() {
       const isLend = paymentMethod.value === 'credit';
+      const isWalkin = customerId.value === '';
+      const needWalkinName = isLend && isWalkin;
+
       lendNotice.classList.toggle('d-none', !isLend);
-      customerId.required = isLend;
-      customerHint.classList.toggle('d-none', !isLend);
+      walkinNameWrap.classList.toggle('d-none', !needWalkinName);
+      walkinName.required = needWalkinName;
+      customerHint.classList.toggle('d-none', isLend);
+      if (!needWalkinName) {
+        walkinName.value = '';
+      }
     }
 
     function recalc() {
@@ -229,6 +255,7 @@ require __DIR__ . '/includes/header.php';
     }
 
     paymentMethod.addEventListener('change', updateLendUi);
+    customerId.addEventListener('change', updateLendUi);
     document.getElementById('btnAddRow').addEventListener('click', addRow);
     updateLendUi();
     addRow();

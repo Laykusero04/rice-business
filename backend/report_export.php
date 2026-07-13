@@ -25,7 +25,7 @@ switch ($type) {
     case 'sales':
         fputcsv($out, ['Date', 'Sale ID', 'Customer', 'Payment', 'Total']);
         $stmt = $pdo->prepare(
-            "SELECT s.sale_date, s.id, COALESCE(c.name, 'Walk-in') AS customer_name,
+            "SELECT s.sale_date, s.id, COALESCE(c.name, 'Walk-in / Just buying') AS customer_name,
                     s.payment_method, s.total
              FROM sales s
              LEFT JOIN customers c ON c.id = s.customer_id

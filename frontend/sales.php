@@ -13,7 +13,7 @@ $to = trim($_GET['to'] ?? '');
 $statusFilter = trim($_GET['status'] ?? '');
 
 $sql = "SELECT s.*,
-               COALESCE(c.name, 'Walk-in') AS customer_name,
+               COALESCE(c.name, 'Walk-in / Just buying') AS customer_name,
                (SELECT COUNT(*) FROM sale_items si WHERE si.sale_id = s.id) AS item_count
         FROM sales s
         LEFT JOIN customers c ON c.id = s.customer_id

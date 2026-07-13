@@ -15,7 +15,7 @@ if ($id <= 0) {
 }
 
 $stmt = $pdo->prepare(
-    "SELECT s.*, COALESCE(c.name, 'Walk-in') AS customer_name, c.contact AS customer_contact
+    "SELECT s.*, COALESCE(c.name, 'Walk-in / Just buying') AS customer_name, c.contact AS customer_contact
      FROM sales s
      LEFT JOIN customers c ON c.id = s.customer_id
      WHERE s.id = ?

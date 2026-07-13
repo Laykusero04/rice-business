@@ -11,6 +11,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $customerId = (int) ($_POST['customer_id'] ?? 0);
+$walkinName = trim($_POST['walkin_name'] ?? '');
 $saleDate = trim($_POST['sale_date'] ?? '');
 $paymentMethod = trim($_POST['payment_method'] ?? 'cash');
 $notes = trim($_POST['notes'] ?? '');
@@ -30,7 +31,7 @@ if ($saleDate === '') {
     exit;
 }
 
-if ($isLend && $customerId <= 0) {
+if ($isLend && $customerId <= 0 && $walkinName === '') {
     header('Location: /rice-business/frontend/sale_new.php?error=customer');
     exit;
 }
@@ -78,12 +79,35 @@ $customerId = $customerId > 0 ? $customerId : null;
 try {
     $pdo->beginTransaction();
 
+    // Walk-in utang: create (or reuse) a customer from the borrower name
+    if ($isLend && $customerId === null && $walkinName !== '') {
+        $findCustomer = $pdo->prepare(
+            'SELECT id FROM customers WHERE LOWER(name) = LOWER(?) LIMIT 1'
+        );
+        $findCustomer->execute([$walkinName]);
+        $existing = $findCustomer->fetch();
+
+        if ($existing) {
+            $customerId = (int) $existing['id'];
+        } else {
+            $createCustomer = $pdo->prepare(
+                'INSERT INTO customers (name, notes) VALUES (?, ?)'
+            );
+            $createCustomer->execute([$walkinName, 'Added from walk-in utang sale']);
+            $customerId = (int) $pdo->lastInsertId();
+        }
+    }
+
     if ($customerId !== null) {
         $checkCustomer = $pdo->prepare('SELECT id FROM customers WHERE id = ?');
         $checkCustomer->execute([$customerId]);
         if (!$checkCustomer->fetch()) {
             throw new RuntimeException('customer');
         }
+    }
+
+    if ($isLend && $customerId === null) {
+        throw new RuntimeException('customer');
     }
 
     $stmt = $pdo->prepare(
@@ -175,6 +199,11 @@ try {
             'Location: /rice-business/frontend/sale_new.php?error=stock&product='
             . urlencode($productName)
         );
+        exit;
+    }
+
+    if ($message === 'customer') {
+        header('Location: /rice-business/frontend/sale_new.php?error=customer');
         exit;
     }
 

@@ -36,7 +36,7 @@ $lowStockProducts = $pdo->query(
 
 $recentSales = $pdo->query(
     "SELECT s.id, s.sale_date, s.total, s.payment_method,
-            COALESCE(c.name, 'Walk-in') AS customer_name
+            COALESCE(c.name, 'Walk-in / Just buying') AS customer_name
      FROM sales s
      LEFT JOIN customers c ON c.id = s.customer_id
      ORDER BY s.id DESC

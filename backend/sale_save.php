@@ -10,6 +10,13 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
+$saleId = (int) ($_POST['id'] ?? 0);
+$isEdit = $saleId > 0;
+
+$redirectNew = $isEdit
+    ? '/rice-business/frontend/sale_edit.php?id=' . $saleId
+    : '/rice-business/frontend/sale_new.php';
+
 $customerId = (int) ($_POST['customer_id'] ?? 0);
 $walkinName = trim($_POST['walkin_name'] ?? '');
 $saleDate = trim($_POST['sale_date'] ?? '');
@@ -27,17 +34,17 @@ if (!in_array($paymentMethod, $allowedPayments, true)) {
 $isLend = $paymentMethod === 'credit';
 
 if ($saleDate === '') {
-    header('Location: /rice-business/frontend/sale_new.php?error=required');
+    header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=required');
     exit;
 }
 
 if ($isLend && $customerId <= 0 && $walkinName === '') {
-    header('Location: /rice-business/frontend/sale_new.php?error=customer');
+    header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=customer');
     exit;
 }
 
 if (!is_array($productIds) || count($productIds) === 0) {
-    header('Location: /rice-business/frontend/sale_new.php?error=items');
+    header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=items');
     exit;
 }
 
@@ -64,13 +71,11 @@ for ($i = 0; $i < count($productIds); $i++) {
 }
 
 if (count($items) === 0) {
-    header('Location: /rice-business/frontend/sale_new.php?error=items');
+    header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=items');
     exit;
 }
 
 $total = round($total, 2);
-$amountPaid = $isLend ? 0.0 : $total;
-$paymentStatus = $isLend ? 'unpaid' : 'paid';
 
 $user = currentUser();
 $notes = $notes !== '' ? $notes : null;
@@ -78,6 +83,42 @@ $customerId = $customerId > 0 ? $customerId : null;
 
 try {
     $pdo->beginTransaction();
+
+    $existingSale = null;
+    $oldAmountPaid = 0.0;
+
+    if ($isEdit) {
+        $existingStmt = $pdo->prepare('SELECT * FROM sales WHERE id = ? FOR UPDATE');
+        $existingStmt->execute([$saleId]);
+        $existingSale = $existingStmt->fetch();
+
+        if (!$existingSale) {
+            throw new RuntimeException('missing');
+        }
+
+        $oldAmountPaid = (float) ($existingSale['amount_paid'] ?? 0);
+
+        $oldItemsStmt = $pdo->prepare(
+            'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?'
+        );
+        $oldItemsStmt->execute([$saleId]);
+        $oldItems = $oldItemsStmt->fetchAll();
+
+        $restoreStock = $pdo->prepare(
+            'UPDATE products SET stock = stock + ? WHERE id = ?'
+        );
+        foreach ($oldItems as $oldItem) {
+            $restoreStock->execute([
+                (float) $oldItem['quantity'],
+                (int) $oldItem['product_id'],
+            ]);
+        }
+
+        $pdo->prepare('DELETE FROM stock_movements WHERE reference = ?')
+            ->execute(['SALE-' . $saleId]);
+        $pdo->prepare('DELETE FROM sale_items WHERE sale_id = ?')
+            ->execute([$saleId]);
+    }
 
     // Walk-in utang: create (or reuse) a customer from the borrower name
     if ($isLend && $customerId === null && $walkinName !== '') {
@@ -110,22 +151,72 @@ try {
         throw new RuntimeException('customer');
     }
 
-    $stmt = $pdo->prepare(
-        'INSERT INTO sales
-         (customer_id, user_id, total, amount_paid, payment_status, payment_method, sale_date, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-    );
-    $stmt->execute([
-        $customerId,
-        $user['id'] ?? null,
-        $total,
-        $amountPaid,
-        $paymentStatus,
-        $paymentMethod,
-        $saleDate,
-        $notes,
-    ]);
-    $saleId = (int) $pdo->lastInsertId();
+    if ($isLend) {
+        $amountPaid = min($oldAmountPaid, $total);
+        if ($amountPaid <= 0) {
+            $paymentStatus = 'unpaid';
+        } elseif ($amountPaid + 0.001 >= $total) {
+            $amountPaid = $total;
+            $paymentStatus = 'paid';
+        } else {
+            $paymentStatus = 'partial';
+        }
+    } else {
+        $amountPaid = $total;
+        $paymentStatus = 'paid';
+    }
+
+    if ($isEdit) {
+        // Keep collection notes from utang payments when editing header/items
+        $existingNotes = trim((string) ($existingSale['notes'] ?? ''));
+        $collectionLines = [];
+        foreach (preg_split("/\r\n|\n|\r/", $existingNotes) as $line) {
+            $line = trim($line);
+            if ($line !== '' && str_starts_with($line, 'Collected ₱')) {
+                $collectionLines[] = $line;
+            }
+        }
+
+        $mergedNotes = $notes ?? '';
+        if (count($collectionLines) > 0) {
+            $mergedNotes = trim($mergedNotes . "\n" . implode("\n", $collectionLines));
+        }
+        $mergedNotes = $mergedNotes !== '' ? $mergedNotes : null;
+
+        $updateStmt = $pdo->prepare(
+            'UPDATE sales
+             SET customer_id = ?, total = ?, amount_paid = ?, payment_status = ?,
+                 payment_method = ?, sale_date = ?, notes = ?
+             WHERE id = ?'
+        );
+        $updateStmt->execute([
+            $customerId,
+            $total,
+            $amountPaid,
+            $paymentStatus,
+            $paymentMethod,
+            $saleDate,
+            $mergedNotes,
+            $saleId,
+        ]);
+    } else {
+        $stmt = $pdo->prepare(
+            'INSERT INTO sales
+             (customer_id, user_id, total, amount_paid, payment_status, payment_method, sale_date, notes)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $customerId,
+            $user['id'] ?? null,
+            $total,
+            $amountPaid,
+            $paymentStatus,
+            $paymentMethod,
+            $saleDate,
+            $notes,
+        ]);
+        $saleId = (int) $pdo->lastInsertId();
+    }
 
     $itemStmt = $pdo->prepare(
         'INSERT INTO sale_items (sale_id, product_id, quantity, price, subtotal)
@@ -186,7 +277,8 @@ try {
     }
 
     $pdo->commit();
-    header('Location: /rice-business/frontend/sale_view.php?id=' . $saleId . '&success=created');
+    $success = $isEdit ? 'updated' : 'created';
+    header('Location: /rice-business/frontend/sale_view.php?id=' . $saleId . '&success=' . $success);
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
@@ -196,18 +288,23 @@ try {
     if (str_starts_with($message, 'stock:')) {
         $productName = substr($message, 6);
         header(
-            'Location: /rice-business/frontend/sale_new.php?error=stock&product='
+            'Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=stock&product='
             . urlencode($productName)
         );
         exit;
     }
 
     if ($message === 'customer') {
-        header('Location: /rice-business/frontend/sale_new.php?error=customer');
+        header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=customer');
         exit;
     }
 
-    header('Location: /rice-business/frontend/sale_new.php?error=save');
+    if ($message === 'missing') {
+        header('Location: /rice-business/frontend/sales.php?error=notfound');
+        exit;
+    }
+
+    header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=save');
 }
 
 exit;

@@ -55,6 +55,26 @@ $paymentLabels = [
     'credit' => 'Lend (Utang)',
 ];
 
+$flash = '';
+$flashType = 'success';
+
+if (isset($_GET['success'])) {
+    $flash = match ($_GET['success']) {
+        'deleted' => 'Sale deleted. Stock has been restored.',
+        default => '',
+    };
+}
+
+if (isset($_GET['error'])) {
+    $flashType = 'danger';
+    $flash = match ($_GET['error']) {
+        'notfound' => 'Sale not found.',
+        'invalid' => 'Invalid sale selected.',
+        'delete' => 'Could not delete the sale.',
+        default => 'Something went wrong.',
+    };
+}
+
 require __DIR__ . '/includes/header.php';
 ?>
 
@@ -67,6 +87,13 @@ require __DIR__ . '/includes/header.php';
     <i class="bi bi-plus-lg"></i> New Sale
   </a>
 </div>
+
+<?php if ($flash !== ''): ?>
+  <div class="alert alert-<?= htmlspecialchars($flashType) ?> alert-dismissible fade show" role="alert">
+    <?= htmlspecialchars($flash) ?>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  </div>
+<?php endif; ?>
 
 <form class="row g-2 mb-3" method="GET" action="sales.php">
   <div class="col-md-3">
@@ -141,8 +168,18 @@ require __DIR__ . '/includes/header.php';
             <td class="text-end <?= $balance > 0 ? 'text-danger fw-semibold' : '' ?>">
               ₱<?= number_format(max(0, $balance), 2) ?>
             </td>
-            <td class="text-end">
+            <td class="text-end text-nowrap">
               <a href="sale_view.php?id=<?= (int) $sale['id'] ?>" class="btn btn-sm btn-outline-primary">View</a>
+              <a href="sale_edit.php?id=<?= (int) $sale['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
+              <form
+                method="POST"
+                action="/rice-business/backend/sale_delete.php"
+                class="d-inline"
+                onsubmit="return confirm('Delete this sale? Stock will be restored.');"
+              >
+                <input type="hidden" name="id" value="<?= (int) $sale['id'] ?>">
+                <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
+              </form>
             </td>
           </tr>
         <?php endforeach; ?>

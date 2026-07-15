@@ -15,6 +15,7 @@ $navItems = [
         'children' => [
             ['id' => 'sales-new', 'label' => 'New Sale', 'href' => 'sale_new.php'],
             ['id' => 'sales-history', 'label' => 'Sales History', 'href' => 'sales.php'],
+            ['id' => 'utang', 'label' => 'Outstanding Utang', 'href' => 'utang.php'],
         ],
     ],
     ['id' => 'products', 'label' => 'Products', 'icon' => 'bi-box-seam', 'href' => 'products.php'],

@@ -59,6 +59,7 @@ if (isset($_GET['success'])) {
         'created' => $sale['payment_method'] === 'credit'
             ? 'Lend saved. Stock deducted. Waiting for customer payment.'
             : 'Sale saved. Stock has been deducted.',
+        'updated' => 'Sale updated. Stock has been adjusted.',
         'collected' => 'Payment recorded successfully.',
         default => '',
     };
@@ -83,7 +84,17 @@ require __DIR__ . '/includes/header.php';
       <?= $sale['payment_method'] === 'credit' ? 'Lend / utang details' : 'Sale details' ?>
     </p>
   </div>
-  <div class="d-flex gap-2">
+  <div class="d-flex flex-wrap gap-2">
+    <a href="sale_edit.php?id=<?= (int) $sale['id'] ?>" class="btn btn-outline-secondary">Edit</a>
+    <form
+      method="POST"
+      action="/rice-business/backend/sale_delete.php"
+      class="d-inline"
+      onsubmit="return confirm('Delete this sale? Stock will be restored.');"
+    >
+      <input type="hidden" name="id" value="<?= (int) $sale['id'] ?>">
+      <button type="submit" class="btn btn-outline-danger">Delete</button>
+    </form>
     <a href="sales.php" class="btn btn-outline-secondary">Back to History</a>
     <a href="sale_new.php" class="btn btn-rice">New Sale</a>
   </div>

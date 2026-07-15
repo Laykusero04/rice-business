@@ -26,6 +26,22 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $customers = $stmt->fetchAll();
 
+$topCustomers = $pdo->query(
+    "SELECT c.name, COALESCE(SUM(s.total), 0) AS total
+     FROM customers c
+     INNER JOIN sales s ON s.customer_id = c.id
+     GROUP BY c.id, c.name
+     ORDER BY total DESC
+     LIMIT 8"
+)->fetchAll();
+
+$chartLabels = [];
+$chartValues = [];
+foreach ($topCustomers as $row) {
+    $chartLabels[] = $row['name'];
+    $chartValues[] = (float) $row['total'];
+}
+
 $flash = '';
 $flashType = 'success';
 
@@ -66,6 +82,13 @@ require __DIR__ . '/includes/header.php';
   <div class="alert alert-<?= htmlspecialchars($flashType) ?> alert-dismissible fade show" role="alert">
     <?= htmlspecialchars($flash) ?>
     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  </div>
+<?php endif; ?>
+
+<?php if (count($topCustomers) > 0): ?>
+  <div class="bg-white rounded shadow-sm p-3 mb-4">
+    <h2 class="h6 mb-3">Top Customers by Sales</h2>
+    <canvas id="topCustomersChart" height="120"></canvas>
   </div>
 <?php endif; ?>
 
@@ -214,5 +237,48 @@ document.addEventListener('DOMContentLoaded', function () {
   modal.addEventListener('hidden.bs.modal', resetForm);
 });
 </script>
+
+<?php if (count($topCustomers) > 0): ?>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const canvas = document.getElementById('topCustomersChart');
+  if (!canvas) return;
+
+  const labels = <?= json_encode($chartLabels, JSON_UNESCAPED_UNICODE) ?>;
+  const values = <?= json_encode($chartValues) ?>;
+
+  new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Total sales (₱)',
+        data: values,
+        backgroundColor: 'rgba(45, 106, 79, 0.75)',
+        borderRadius: 6
+      }]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        x: {
+          beginAtZero: true,
+          ticks: {
+            callback: function (value) {
+              return '₱' + Number(value).toLocaleString();
+            }
+          }
+        }
+      }
+    }
+  });
+});
+</script>
+<?php endif; ?>
 
 <?php require __DIR__ . '/includes/footer.php'; ?>

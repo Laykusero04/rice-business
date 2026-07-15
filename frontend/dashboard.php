@@ -57,6 +57,27 @@ $todayExpensesStmt = $pdo->prepare(
 $todayExpensesStmt->execute([$today]);
 $todayExpenses = (float) $todayExpensesStmt->fetchColumn();
 
+$weekStart = date('Y-m-d', strtotime('-6 days'));
+$weekSalesStmt = $pdo->prepare(
+    'SELECT sale_date, COALESCE(SUM(total), 0) AS total
+     FROM sales
+     WHERE sale_date BETWEEN ? AND ?
+     GROUP BY sale_date'
+);
+$weekSalesStmt->execute([$weekStart, $today]);
+$weekSalesByDate = [];
+foreach ($weekSalesStmt->fetchAll() as $row) {
+    $weekSalesByDate[$row['sale_date']] = (float) $row['total'];
+}
+
+$chartLabels = [];
+$chartValues = [];
+for ($i = 6; $i >= 0; $i--) {
+    $date = date('Y-m-d', strtotime("-{$i} days"));
+    $chartLabels[] = date('M j', strtotime($date));
+    $chartValues[] = $weekSalesByDate[$date] ?? 0.0;
+}
+
 $paymentLabels = [
     'cash' => 'Cash',
     'gcash' => 'GCash',
@@ -113,6 +134,14 @@ require __DIR__ . '/includes/header.php';
       <div class="small text-muted"><?= count($lowStockProducts) ?> low-stock item(s)</div>
     </div>
   </div>
+</div>
+
+<div class="bg-white rounded shadow-sm p-3 mb-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="h6 mb-0">Sales — Last 7 Days</h2>
+    <a href="reports.php" class="small">View reports</a>
+  </div>
+  <canvas id="weekSalesChart" height="100"></canvas>
 </div>
 
 <div class="row g-3 mb-4">
@@ -227,5 +256,45 @@ require __DIR__ . '/includes/header.php';
     </table>
   </div>
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const canvas = document.getElementById('weekSalesChart');
+  if (!canvas) return;
+
+  const labels = <?= json_encode($chartLabels, JSON_UNESCAPED_UNICODE) ?>;
+  const values = <?= json_encode($chartValues) ?>;
+
+  new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Sales (₱)',
+        data: values,
+        backgroundColor: 'rgba(45, 106, 79, 0.75)',
+        borderRadius: 6
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: {
+        legend: { display: false }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: {
+            callback: function (value) {
+              return '₱' + Number(value).toLocaleString();
+            }
+          }
+        }
+      }
+    }
+  });
+});
+</script>
 
 <?php require __DIR__ . '/includes/footer.php'; ?>

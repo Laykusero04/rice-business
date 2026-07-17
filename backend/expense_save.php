@@ -16,7 +16,7 @@ $amount = (float) ($_POST['amount'] ?? 0);
 $expenseDate = trim($_POST['expense_date'] ?? '');
 $notes = trim($_POST['notes'] ?? '');
 
-$allowedCategories = ['Delivery', 'Electricity', 'Salary', 'Maintenance', 'Fuel', 'Other'];
+$allowedCategories = ['Delivery', 'Electricity', 'Salary', 'Maintenance', 'Fuel', 'Owner Investment', 'Other'];
 
 if ($category === '' || $expenseDate === '' || $amount <= 0) {
     header('Location: /rice-business/frontend/expenses.php?error=required');
@@ -33,6 +33,14 @@ $user = currentUser();
 
 try {
     if ($id > 0) {
+        $linkedStmt = $pdo->prepare('SELECT purchase_id FROM expenses WHERE id = ?');
+        $linkedStmt->execute([$id]);
+        $linked = $linkedStmt->fetch();
+        if ($linked && !empty($linked['purchase_id'])) {
+            header('Location: /rice-business/frontend/expenses.php?error=linked');
+            exit;
+        }
+
         $stmt = $pdo->prepare(
             'UPDATE expenses
              SET category = ?, amount = ?, expense_date = ?, notes = ?

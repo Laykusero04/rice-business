@@ -10,20 +10,33 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     exit;
 }
 
+$purchaseId = (int) ($_POST['id'] ?? 0);
+$isEdit = $purchaseId > 0;
+
+$redirectNew = $isEdit
+    ? '/rice-business/frontend/purchase_edit.php?id=' . $purchaseId
+    : '/rice-business/frontend/purchase_new.php';
+
 $supplierId = (int) ($_POST['supplier_id'] ?? 0);
 $purchaseDate = trim($_POST['purchase_date'] ?? '');
+$paymentSource = trim($_POST['payment_source'] ?? 'business');
 $notes = trim($_POST['notes'] ?? '');
 $productIds = $_POST['product_id'] ?? [];
-$sacksList = $_POST['sacks'] ?? [];
-$sackPrices = $_POST['sack_price'] ?? [];
+$qtyList = $_POST['quantity'] ?? [];
+$unitPrices = $_POST['unit_price'] ?? [];
 
 if ($supplierId <= 0 || $purchaseDate === '') {
-    header('Location: /rice-business/frontend/purchase_new.php?error=required');
+    header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=required');
     exit;
 }
 
+$allowedPaymentSources = ['business', 'personal'];
+if (!in_array($paymentSource, $allowedPaymentSources, true)) {
+    $paymentSource = 'business';
+}
+
 if (!is_array($productIds) || count($productIds) === 0) {
-    header('Location: /rice-business/frontend/purchase_new.php?error=items');
+    header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=items');
     exit;
 }
 
@@ -33,14 +46,53 @@ $notes = $notes !== '' ? $notes : null;
 try {
     $pdo->beginTransaction();
 
-    $checkSupplier = $pdo->prepare('SELECT id FROM suppliers WHERE id = ?');
+    $checkSupplier = $pdo->prepare('SELECT id, name FROM suppliers WHERE id = ?');
     $checkSupplier->execute([$supplierId]);
-    if (!$checkSupplier->fetch()) {
+    $supplier = $checkSupplier->fetch();
+    if (!$supplier) {
         throw new RuntimeException('supplier');
     }
 
+    $originalProductIds = [];
+    if ($isEdit) {
+        $existingStmt = $pdo->prepare('SELECT * FROM purchases WHERE id = ? FOR UPDATE');
+        $existingStmt->execute([$purchaseId]);
+        if (!$existingStmt->fetch()) {
+            throw new RuntimeException('missing');
+        }
+
+        $oldItemsStmt = $pdo->prepare(
+            'SELECT pi.product_id, pi.quantity, pr.name
+             FROM purchase_items pi
+             INNER JOIN products pr ON pr.id = pi.product_id
+             WHERE pi.purchase_id = ?'
+        );
+        $oldItemsStmt->execute([$purchaseId]);
+        $oldItems = $oldItemsStmt->fetchAll();
+        $originalProductIds = array_map(static fn ($item) => (int) $item['product_id'], $oldItems);
+
+        $reverseStock = $pdo->prepare(
+            'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
+        );
+        foreach ($oldItems as $oldItem) {
+            $reverseStock->execute([
+                (float) $oldItem['quantity'],
+                (int) $oldItem['product_id'],
+                (float) $oldItem['quantity'],
+            ]);
+            if ($reverseStock->rowCount() === 0) {
+                throw new RuntimeException('stock:' . $oldItem['name']);
+            }
+        }
+
+        $pdo->prepare('DELETE FROM stock_movements WHERE reference = ?')
+            ->execute(['PURCHASE-' . $purchaseId]);
+        $pdo->prepare('DELETE FROM purchase_items WHERE purchase_id = ?')
+            ->execute([$purchaseId]);
+    }
+
     $checkProduct = $pdo->prepare(
-        'SELECT id, kg_per_sack FROM products WHERE id = ? AND status = ? FOR UPDATE'
+        'SELECT id, name, product_type, unit, kg_per_sack, status FROM products WHERE id = ? FOR UPDATE'
     );
 
     $items = [];
@@ -48,35 +100,58 @@ try {
 
     for ($i = 0; $i < count($productIds); $i++) {
         $productId = (int) ($productIds[$i] ?? 0);
-        $sacks = (float) ($sacksList[$i] ?? 0);
-        $sackPrice = (float) ($sackPrices[$i] ?? 0);
+        $qty = (float) ($qtyList[$i] ?? 0);
+        $unitPrice = (float) ($unitPrices[$i] ?? 0);
 
-        if ($productId <= 0 || $sacks <= 0 || $sackPrice < 0) {
+        if ($productId <= 0 || $qty <= 0 || $unitPrice < 0) {
             continue;
         }
 
-        $checkProduct->execute([$productId, 'active']);
+        $checkProduct->execute([$productId]);
         $product = $checkProduct->fetch();
-        if (!$product) {
+        if (
+            !$product
+            || (
+                ($product['status'] ?? 'active') !== 'active'
+                && !($isEdit && in_array($productId, $originalProductIds, true))
+            )
+        ) {
             throw new RuntimeException('product');
         }
 
+        $productType = $product['product_type'] ?? 'RICE';
+        $unit = $product['unit'] ?? 'kg';
         $kgPerSack = (float) ($product['kg_per_sack'] ?? 25);
         if ($kgPerSack <= 0) {
             $kgPerSack = 25;
         }
 
-        $quantityKg = round($sacks * $kgPerSack, 2);
-        $buyingPricePerKg = round($sackPrice / $kgPerSack, 2);
-        $subtotal = round($sacks * $sackPrice, 2);
+        if ($productType === 'RICE') {
+            $quantityStock = round($qty * $kgPerSack, 2);
+            $buyingPriceStored = round($unitPrice / $kgPerSack, 2);
+            $subtotal = round($qty * $unitPrice, 2);
+        } else {
+            if ($unit === 'pc') {
+                $isWhole = abs($qty - round($qty)) < 0.0001;
+                if (!$isWhole) {
+                    throw new RuntimeException('items');
+                }
+            }
+            $quantityStock = round($qty, 2);
+            $buyingPriceStored = round($unitPrice, 2);
+            $subtotal = round($qty * $unitPrice, 2);
+        }
 
         $items[] = [
             'product_id' => $productId,
-            'quantity' => $quantityKg,
-            'buying_price' => $buyingPricePerKg,
+            'product_type' => $productType,
+            'unit' => $unit,
+            'qty_input' => $qty,
+            'unit_price_input' => $unitPrice,
+            'kg_per_sack' => $kgPerSack,
+            'quantity' => $quantityStock,
+            'buying_price' => $buyingPriceStored,
             'subtotal' => $subtotal,
-            'sacks' => $sacks,
-            'sack_price' => $sackPrice,
         ];
         $total += $subtotal;
     }
@@ -85,18 +160,72 @@ try {
         throw new RuntimeException('items');
     }
 
-    $stmt = $pdo->prepare(
-        'INSERT INTO purchases (supplier_id, total, purchase_date, notes, user_id)
-         VALUES (?, ?, ?, ?, ?)'
-    );
-    $stmt->execute([
-        $supplierId,
-        round($total, 2),
-        $purchaseDate,
-        $notes,
-        $user['id'] ?? null,
-    ]);
-    $purchaseId = (int) $pdo->lastInsertId();
+    $total = round($total, 2);
+
+    if ($isEdit) {
+        $stmt = $pdo->prepare(
+            'UPDATE purchases
+             SET supplier_id = ?, total = ?, purchase_date = ?, payment_source = ?, notes = ?
+             WHERE id = ?'
+        );
+        $stmt->execute([
+            $supplierId,
+            $total,
+            $purchaseDate,
+            $paymentSource,
+            $notes,
+            $purchaseId,
+        ]);
+    } else {
+        $stmt = $pdo->prepare(
+            'INSERT INTO purchases (supplier_id, total, purchase_date, payment_source, notes, user_id)
+             VALUES (?, ?, ?, ?, ?, ?)'
+        );
+        $stmt->execute([
+            $supplierId,
+            $total,
+            $purchaseDate,
+            $paymentSource,
+            $notes,
+            $user['id'] ?? null,
+        ]);
+        $purchaseId = (int) $pdo->lastInsertId();
+    }
+
+    $expenseNote = 'Personal cash for purchase #' . $purchaseId . ' (' . $supplier['name'] . ')';
+    $linkedExpenseStmt = $pdo->prepare('SELECT id FROM expenses WHERE purchase_id = ? LIMIT 1');
+    $linkedExpenseStmt->execute([$purchaseId]);
+    $linkedExpense = $linkedExpenseStmt->fetch();
+
+    if ($paymentSource === 'personal') {
+        if ($linkedExpense) {
+            $updateExpense = $pdo->prepare(
+                'UPDATE expenses SET category = ?, amount = ?, expense_date = ?, notes = ? WHERE id = ?'
+            );
+            $updateExpense->execute([
+                'Owner Investment',
+                $total,
+                $purchaseDate,
+                $expenseNote,
+                $linkedExpense['id'],
+            ]);
+        } else {
+            $expenseStmt = $pdo->prepare(
+                'INSERT INTO expenses (category, amount, expense_date, notes, user_id, purchase_id)
+                 VALUES (?, ?, ?, ?, ?, ?)'
+            );
+            $expenseStmt->execute([
+                'Owner Investment',
+                $total,
+                $purchaseDate,
+                $expenseNote,
+                $user['id'] ?? null,
+                $purchaseId,
+            ]);
+        }
+    } elseif ($linkedExpense) {
+        $pdo->prepare('DELETE FROM expenses WHERE id = ?')->execute([$linkedExpense['id']]);
+    }
 
     $itemStmt = $pdo->prepare(
         'INSERT INTO purchase_items (purchase_id, product_id, quantity, buying_price, subtotal)
@@ -113,6 +242,16 @@ try {
     );
 
     foreach ($items as $item) {
+        $movementNote = 'Stock in from purchase #' . $purchaseId;
+        if (($item['product_type'] ?? 'RICE') === 'RICE') {
+            $movementNote .= ' (' . number_format((float) $item['qty_input'], 2) . ' sack @ ₱'
+                . number_format((float) $item['unit_price_input'], 2) . ')';
+        } else {
+            $unit = $item['unit'] ?? 'pc';
+            $movementNote .= ' (' . number_format((float) $item['qty_input'], $unit === 'pc' ? 0 : 2) . ' ' . $unit
+                . ' @ ₱' . number_format((float) $item['unit_price_input'], 2) . ' / ' . $unit . ')';
+        }
+
         $itemStmt->execute([
             $purchaseId,
             $item['product_id'],
@@ -132,20 +271,35 @@ try {
             'IN',
             $item['quantity'],
             'PURCHASE-' . $purchaseId,
-            'Stock in from purchase #' . $purchaseId
-                . ' (' . number_format($item['sacks'], 2) . ' sack @ ₱'
-                . number_format($item['sack_price'], 2) . ')',
+            $movementNote,
         ]);
     }
 
     $pdo->commit();
-    header('Location: /rice-business/frontend/purchase_view.php?id=' . $purchaseId . '&success=created');
+    $success = $isEdit ? 'updated' : 'created';
+    header('Location: /rice-business/frontend/purchase_view.php?id=' . $purchaseId . '&success=' . $success);
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
     }
-    $code = $e->getMessage() === 'items' ? 'items' : 'save';
-    header('Location: /rice-business/frontend/purchase_new.php?error=' . $code);
+
+    $message = $e->getMessage();
+    if (str_starts_with($message, 'stock:')) {
+        $productName = substr($message, 6);
+        header(
+            'Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=stock&product='
+            . urlencode($productName)
+        );
+        exit;
+    }
+
+    if ($message === 'missing') {
+        header('Location: /rice-business/frontend/purchases.php?error=notfound');
+        exit;
+    }
+
+    $code = $message === 'items' ? 'items' : 'save';
+    header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=' . $code);
 }
 
 exit;

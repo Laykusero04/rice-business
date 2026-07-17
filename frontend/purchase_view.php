@@ -40,9 +40,19 @@ $itemStmt->execute([$id]);
 $items = $itemStmt->fetchAll();
 
 $flash = '';
-if (isset($_GET['success']) && $_GET['success'] === 'created') {
-    $flash = 'Purchase saved. Stock has been updated.';
+if (isset($_GET['success'])) {
+    $flash = match ($_GET['success']) {
+        'created' => 'Purchase saved. Stock has been updated.',
+        'updated' => 'Purchase updated successfully.',
+        default => '',
+    };
 }
+
+$paymentSourceLabels = [
+    'business' => 'Business funds',
+    'personal' => 'Personal money (mine)',
+];
+$paymentSource = $purchase['payment_source'] ?? 'business';
 
 require __DIR__ . '/includes/header.php';
 ?>
@@ -53,6 +63,7 @@ require __DIR__ . '/includes/header.php';
     <p class="text-muted mb-0">Stock-in details</p>
   </div>
   <div class="d-flex gap-2">
+    <a href="purchase_edit.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-outline-primary">Edit</a>
     <a href="purchases.php" class="btn btn-outline-secondary">Back to History</a>
     <a href="purchase_new.php" class="btn btn-rice">New Purchase</a>
   </div>
@@ -66,20 +77,35 @@ require __DIR__ . '/includes/header.php';
 <?php endif; ?>
 
 <div class="row g-3 mb-4">
-  <div class="col-md-4">
+  <div class="col-md-3">
     <div class="bg-white rounded shadow-sm p-3 h-100">
       <div class="text-muted small">Supplier</div>
       <div class="fw-semibold"><?= htmlspecialchars($purchase['supplier_name']) ?></div>
       <div class="small text-muted"><?= htmlspecialchars($purchase['supplier_contact'] ?? '') ?></div>
     </div>
   </div>
-  <div class="col-md-4">
+  <div class="col-md-3">
     <div class="bg-white rounded shadow-sm p-3 h-100">
       <div class="text-muted small">Date</div>
       <div class="fw-semibold"><?= htmlspecialchars($purchase['purchase_date']) ?></div>
     </div>
   </div>
-  <div class="col-md-4">
+  <div class="col-md-3">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Paid with</div>
+      <div class="fw-semibold">
+        <?php if ($paymentSource === 'personal'): ?>
+          <span class="badge text-bg-warning"><?= htmlspecialchars($paymentSourceLabels[$paymentSource]) ?></span>
+        <?php else: ?>
+          <?= htmlspecialchars($paymentSourceLabels[$paymentSource] ?? 'Business funds') ?>
+        <?php endif; ?>
+      </div>
+      <?php if ($paymentSource === 'personal'): ?>
+        <div class="small text-muted mt-1">Recorded in Expenses as Owner Investment</div>
+      <?php endif; ?>
+    </div>
+  </div>
+  <div class="col-md-3">
     <div class="bg-white rounded shadow-sm p-3 h-100">
       <div class="text-muted small">Total</div>
       <div class="fw-semibold fs-5">₱<?= number_format((float) $purchase['total'], 2) ?></div>

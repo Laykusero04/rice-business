@@ -25,6 +25,7 @@ $notes = trim($_POST['notes'] ?? '');
 $productIds = $_POST['product_id'] ?? [];
 $quantities = $_POST['quantity'] ?? [];
 $prices = $_POST['price'] ?? [];
+$lineSubtotals = $_POST['line_subtotal'] ?? [];
 
 $allowedPayments = ['cash', 'gcash', 'bank', 'credit'];
 if (!in_array($paymentMethod, $allowedPayments, true)) {
@@ -55,12 +56,17 @@ for ($i = 0; $i < count($productIds); $i++) {
     $productId = (int) ($productIds[$i] ?? 0);
     $quantity = (float) ($quantities[$i] ?? 0);
     $price = (float) ($prices[$i] ?? 0);
+    $lineSubtotalRaw = trim((string) ($lineSubtotals[$i] ?? ''));
 
     if ($productId <= 0 || $quantity <= 0 || $price < 0) {
         continue;
     }
 
-    $subtotal = round($quantity * $price, 2);
+    if ($lineSubtotalRaw !== '' && is_numeric($lineSubtotalRaw)) {
+        $subtotal = round((float) $lineSubtotalRaw, 2);
+    } else {
+        $subtotal = round($quantity * $price, 2);
+    }
     $items[] = [
         'product_id' => $productId,
         'quantity' => $quantity,
@@ -223,7 +229,7 @@ try {
          VALUES (?, ?, ?, ?, ?)'
     );
     $stockCheck = $pdo->prepare(
-        'SELECT id, name, stock FROM products WHERE id = ? AND status = ? FOR UPDATE'
+        'SELECT id, name, unit, stock FROM products WHERE id = ? AND status = ? FOR UPDATE'
     );
     $stockStmt = $pdo->prepare(
         'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
@@ -239,6 +245,14 @@ try {
 
         if (!$product) {
             throw new RuntimeException('product');
+        }
+
+        $unit = $product['unit'] ?? 'kg';
+        if ($unit === 'pc') {
+            $isWhole = abs(((float) $item['quantity']) - round((float) $item['quantity'])) < 0.0001;
+            if (!$isWhole) {
+                throw new RuntimeException('items');
+            }
         }
 
         if ((float) $product['stock'] < $item['quantity']) {

@@ -7,7 +7,7 @@ $user = currentUser();
 $pageTitle = 'Expenses';
 $activePage = 'expenses';
 
-$categories = ['Delivery', 'Electricity', 'Salary', 'Maintenance', 'Fuel', 'Other'];
+$categories = ['Delivery', 'Electricity', 'Salary', 'Maintenance', 'Fuel', 'Owner Investment', 'Other'];
 
 $search = trim($_GET['q'] ?? '');
 $categoryFilter = trim($_GET['category'] ?? '');
@@ -69,6 +69,7 @@ if (isset($_GET['error'])) {
         'invalid' => 'Please check the values you entered.',
         'save' => 'Could not save the expense.',
         'delete' => 'Could not delete the expense.',
+        'linked' => 'This expense was created from a purchase and cannot be changed here.',
         default => 'Something went wrong.',
     };
 }
@@ -155,8 +156,16 @@ require __DIR__ . '/includes/header.php';
             <td class="text-end">₱<?= number_format((float) $expense['amount'], 2) ?></td>
             <td class="text-muted small" style="max-width: 260px;">
               <?= htmlspecialchars($expense['notes'] ?? '—') ?>
+              <?php if (!empty($expense['purchase_id'])): ?>
+                <div>
+                  <a href="purchase_view.php?id=<?= (int) $expense['purchase_id'] ?>" class="small">View purchase #<?= (int) $expense['purchase_id'] ?></a>
+                </div>
+              <?php endif; ?>
             </td>
             <td class="text-end text-nowrap">
+              <?php if (!empty($expense['purchase_id'])): ?>
+                <a href="purchase_view.php?id=<?= (int) $expense['purchase_id'] ?>" class="btn btn-sm btn-outline-secondary">View purchase</a>
+              <?php else: ?>
               <button
                 type="button"
                 class="btn btn-sm btn-outline-primary btn-edit-expense"
@@ -179,6 +188,7 @@ require __DIR__ . '/includes/header.php';
                 <input type="hidden" name="id" value="<?= (int) $expense['id'] ?>">
                 <button type="submit" class="btn btn-sm btn-outline-danger">Delete</button>
               </form>
+              <?php endif; ?>
             </td>
           </tr>
         <?php endforeach; ?>

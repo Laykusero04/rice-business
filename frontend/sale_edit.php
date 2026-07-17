@@ -37,10 +37,10 @@ foreach ($saleItems as $item) {
 
 $customers = $pdo->query('SELECT id, name FROM customers ORDER BY name ASC')->fetchAll();
 $productsRaw = $pdo->query(
-    "SELECT id, name, selling_price, stock
+    "SELECT id, name, product_type, unit, selling_price, stock
      FROM products
      WHERE status = 'active'
-     ORDER BY name ASC"
+     ORDER BY (product_type = 'RICE') DESC, name ASC"
 )->fetchAll();
 
 $products = [];
@@ -49,6 +49,16 @@ foreach ($productsRaw as $product) {
     $available = (float) $product['stock'] + ($reservedByProduct[$pid] ?? 0);
     $product['available_stock'] = $available;
     $products[] = $product;
+}
+
+$riceProducts = [];
+$otherProducts = [];
+foreach ($products as $p) {
+    if (($p['product_type'] ?? 'RICE') === 'RICE') {
+        $riceProducts[] = $p;
+    } else {
+        $otherProducts[] = $p;
+    }
 }
 
 $flash = '';
@@ -188,9 +198,9 @@ require __DIR__ . '/includes/header.php';
         <thead class="table-light">
           <tr>
             <th style="min-width: 220px;">Rice / Product</th>
-            <th style="min-width: 110px;">Qty (kg)</th>
-            <th style="min-width: 130px;">Price</th>
-            <th style="min-width: 120px;" class="text-end">Subtotal</th>
+            <th style="min-width: 110px;">₱/kg</th>
+            <th style="min-width: 110px;">Qty</th>
+            <th style="min-width: 120px;" class="text-end">Total (₱)</th>
             <th></th>
           </tr>
         </thead>
@@ -216,25 +226,63 @@ require __DIR__ . '/includes/header.php';
       <td>
         <select class="form-select product-select" name="product_id[]" required>
           <option value="">Select product</option>
-          <?php foreach ($products as $product): ?>
-            <option
-              value="<?= (int) $product['id'] ?>"
-              data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
-              data-stock="<?= htmlspecialchars(number_format($product['available_stock'], 2, '.', '')) ?>"
-            >
-              <?= htmlspecialchars($product['name']) ?>
-              (stock: <?= number_format($product['available_stock'], 2) ?> kg)
-            </option>
-          <?php endforeach; ?>
+          <?php if (count($riceProducts) > 0): ?>
+            <optgroup label="Rice (kg)">
+              <?php foreach ($riceProducts as $product): ?>
+                <option
+                  value="<?= (int) $product['id'] ?>"
+                  data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
+                  data-stock="<?= htmlspecialchars(number_format($product['available_stock'], 2, '.', '')) ?>"
+                  data-unit="<?= htmlspecialchars($product['unit'] ?? 'kg') ?>"
+                >
+                  <?= htmlspecialchars($product['name']) ?>
+                  (stock: <?= number_format((float) $product['available_stock'], 2) ?> kg)
+                </option>
+              <?php endforeach; ?>
+            </optgroup>
+          <?php endif; ?>
+          <?php if (count($otherProducts) > 0): ?>
+            <optgroup label="Other items">
+              <?php foreach ($otherProducts as $product): ?>
+                <?php $unit = $product['unit'] ?? 'pc'; ?>
+                <option
+                  value="<?= (int) $product['id'] ?>"
+                  data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
+                  data-stock="<?= htmlspecialchars(number_format($product['available_stock'], 2, '.', '')) ?>"
+                  data-unit="<?= htmlspecialchars($unit) ?>"
+                >
+                  <?= htmlspecialchars($product['name']) ?>
+                  (stock: <?= number_format((float) $product['available_stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>)
+                </option>
+              <?php endforeach; ?>
+            </optgroup>
+          <?php endif; ?>
         </select>
-      </td>
-      <td>
-        <input type="number" class="form-control qty-input" name="quantity[]" step="0.01" min="0.01" value="1" required>
+        <div class="btn-group btn-group-sm mt-2 w-100 entry-mode" role="group" aria-label="How to enter this item">
+          <button type="button" class="btn btn-outline-secondary btn-mode active" data-mode="qty">By kg</button>
+          <button type="button" class="btn btn-outline-secondary btn-mode" data-mode="amount">By ₱ amount</button>
+        </div>
       </td>
       <td>
         <input type="number" class="form-control price-input" name="price[]" step="0.01" min="0" value="0" required>
+        <div class="form-text">per kg</div>
       </td>
-      <td class="text-end subtotal-cell">₱0.00</td>
+      <td>
+        <input type="number" class="form-control qty-input" name="quantity[]" step="0.01" min="0.01" value="1" required>
+        <div class="form-text qty-hint">kg</div>
+        <input type="hidden" class="line-subtotal-hidden" name="line_subtotal[]" value="">
+      </td>
+      <td class="text-end line-total-cell">
+        <span class="subtotal-display fw-semibold">₱0.00</span>
+        <input
+          type="number"
+          class="form-control text-end subtotal-input d-none"
+          step="0.01"
+          min="0"
+          placeholder="e.g. 100"
+          aria-label="Customer pays"
+        >
+      </td>
       <td class="text-end">
         <button type="button" class="btn btn-sm btn-outline-danger btn-remove-row" title="Remove">
           <i class="bi bi-trash"></i>
@@ -284,14 +332,17 @@ require __DIR__ . '/includes/header.php';
       }
     }
 
-    function recalc() {
+    function recalcGrandTotal() {
       let total = 0;
       tbody.querySelectorAll('tr').forEach(function (row) {
+        const mode = row.dataset.entryMode || 'qty';
+        if (mode === 'amount') {
+          total += parseFloat(row.querySelector('.subtotal-input').value) || 0;
+          return;
+        }
         const qty = parseFloat(row.querySelector('.qty-input').value) || 0;
         const price = parseFloat(row.querySelector('.price-input').value) || 0;
-        const subtotal = qty * price;
-        row.querySelector('.subtotal-cell').textContent = formatMoney(subtotal);
-        total += subtotal;
+        total += qty * price;
       });
       grandTotalEl.textContent = formatMoney(total);
     }
@@ -300,6 +351,116 @@ require __DIR__ . '/includes/header.php';
       const productSelect = row.querySelector('.product-select');
       const priceInput = row.querySelector('.price-input');
       const qtyInput = row.querySelector('.qty-input');
+      const subtotalInput = row.querySelector('.subtotal-input');
+      const subtotalDisplay = row.querySelector('.subtotal-display');
+      const lineSubtotalHidden = row.querySelector('.line-subtotal-hidden');
+      const qtyHint = row.querySelector('.qty-hint');
+      let entryMode = 'qty';
+
+      function getUnit() {
+        const option = productSelect.selectedOptions[0];
+        return option && option.dataset.unit ? option.dataset.unit : 'kg';
+      }
+
+      function formatQty(qty) {
+        if (getUnit() === 'pc') {
+          return String(Math.max(1, Math.round(qty)));
+        }
+        return (Math.round(qty * 100) / 100).toFixed(2);
+      }
+
+      function formatQtyFromAmount(qty) {
+        if (getUnit() === 'pc') {
+          return String(Math.max(1, Math.round(qty)));
+        }
+        return (Math.round(qty * 10000) / 10000).toFixed(4);
+      }
+
+      function syncLineSubtotalHidden() {
+        if (entryMode === 'amount') {
+          const amount = parseFloat(subtotalInput.value);
+          lineSubtotalHidden.value = amount > 0 ? amount.toFixed(2) : '';
+        } else {
+          lineSubtotalHidden.value = '';
+        }
+      }
+
+      function applyUnitRules() {
+        const unit = getUnit();
+        if (entryMode === 'qty') {
+          qtyHint.textContent = unit;
+        }
+        if (unit === 'pc') {
+          qtyInput.step = entryMode === 'amount' ? '1' : '1';
+          qtyInput.min = '1';
+          if (entryMode === 'qty') {
+            qtyInput.value = String(Math.max(1, Math.round(parseFloat(qtyInput.value) || 1)));
+          }
+        } else {
+          qtyInput.step = entryMode === 'amount' ? '0.0001' : '0.01';
+          qtyInput.min = '0.01';
+        }
+      }
+
+      function updateTotalDisplay() {
+        const qty = parseFloat(qtyInput.value) || 0;
+        const price = parseFloat(priceInput.value) || 0;
+        subtotalDisplay.textContent = formatMoney(qty * price);
+        syncLineSubtotalHidden();
+        recalcGrandTotal();
+      }
+
+      function calcQtyFromAmount() {
+        const amount = parseFloat(subtotalInput.value) || 0;
+        const price = parseFloat(priceInput.value) || 0;
+        if (price > 0 && amount > 0) {
+          qtyInput.value = formatQtyFromAmount(amount / price);
+        } else if (amount <= 0) {
+          qtyInput.value = '';
+        }
+        syncLineSubtotalHidden();
+        recalcGrandTotal();
+      }
+
+      function refreshLine() {
+        if (entryMode === 'amount') {
+          calcQtyFromAmount();
+        } else {
+          updateTotalDisplay();
+        }
+      }
+
+      function setEntryMode(mode) {
+        if (mode === 'amount' && entryMode === 'qty') {
+          const qty = parseFloat(qtyInput.value) || 0;
+          const price = parseFloat(priceInput.value) || 0;
+          if (qty > 0 && price > 0) {
+            subtotalInput.value = (qty * price).toFixed(2);
+          }
+        }
+
+        entryMode = mode;
+        row.dataset.entryMode = mode;
+        const isAmount = mode === 'amount';
+
+        row.querySelectorAll('.btn-mode').forEach(function (btn) {
+          btn.classList.toggle('active', btn.dataset.mode === mode);
+        });
+
+        qtyInput.readOnly = isAmount;
+        qtyInput.classList.toggle('bg-light', isAmount);
+        subtotalInput.classList.toggle('d-none', !isAmount);
+        subtotalDisplay.classList.toggle('d-none', isAmount);
+        qtyHint.textContent = isAmount ? 'auto' : getUnit();
+        applyUnitRules();
+
+        if (isAmount) {
+          calcQtyFromAmount();
+          subtotalInput.focus();
+        } else {
+          updateTotalDisplay();
+        }
+      }
 
       productSelect.addEventListener('change', function () {
         const option = productSelect.selectedOptions[0];
@@ -309,19 +470,38 @@ require __DIR__ . '/includes/header.php';
         if (option && option.dataset.stock) {
           qtyInput.max = option.dataset.stock;
         }
-        recalc();
+        applyUnitRules();
+        refreshLine();
       });
 
-      qtyInput.addEventListener('input', recalc);
-      priceInput.addEventListener('input', recalc);
+      qtyInput.addEventListener('input', function () {
+        if (entryMode === 'qty') {
+          updateTotalDisplay();
+        }
+      });
+      priceInput.addEventListener('input', refreshLine);
+      subtotalInput.addEventListener('input', function () {
+        if (entryMode === 'amount') {
+          calcQtyFromAmount();
+        }
+      });
+
+      row.querySelectorAll('.btn-mode').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          setEntryMode(btn.dataset.mode);
+        });
+      });
 
       row.querySelector('.btn-remove-row').addEventListener('click', function () {
         if (tbody.querySelectorAll('tr').length === 1) {
           return;
         }
         row.remove();
-        recalc();
+        recalcGrandTotal();
       });
+
+      row._refreshLine = refreshLine;
+      setEntryMode('qty');
     }
 
     function addRow(preset) {
@@ -334,6 +514,7 @@ require __DIR__ . '/includes/header.php';
         const productSelect = row.querySelector('.product-select');
         const qtyInput = row.querySelector('.qty-input');
         const priceInput = row.querySelector('.price-input');
+        const qtyHint = row.querySelector('.qty-hint');
 
         productSelect.value = String(preset.product_id);
         qtyInput.value = preset.quantity;
@@ -343,9 +524,22 @@ require __DIR__ . '/includes/header.php';
         if (option && option.dataset.stock) {
           qtyInput.max = option.dataset.stock;
         }
+        const unit = option && option.dataset.unit ? option.dataset.unit : 'kg';
+        qtyHint.textContent = unit;
+        if (unit === 'pc') {
+          qtyInput.step = '1';
+          qtyInput.min = '1';
+        } else {
+          qtyInput.step = '0.01';
+          qtyInput.min = '0.01';
+        }
+
+        if (typeof row._refreshLine === 'function') {
+          row._refreshLine();
+        }
       }
 
-      recalc();
+      recalcGrandTotal();
     }
 
     paymentMethod.addEventListener('change', updateLendUi);

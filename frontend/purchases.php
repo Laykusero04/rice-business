@@ -39,6 +39,11 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $purchases = $stmt->fetchAll();
 
+$paymentSourceLabels = [
+    'business' => 'Business funds',
+    'personal' => 'Personal',
+];
+
 require __DIR__ . '/includes/header.php';
 ?>
 
@@ -81,6 +86,7 @@ require __DIR__ . '/includes/header.php';
         <th>#</th>
         <th>Date</th>
         <th>Supplier</th>
+        <th>Paid with</th>
         <th class="text-end">Items</th>
         <th class="text-end">Total</th>
         <th class="text-end">Actions</th>
@@ -89,7 +95,7 @@ require __DIR__ . '/includes/header.php';
     <tbody>
       <?php if (count($purchases) === 0): ?>
         <tr>
-          <td colspan="6" class="text-center text-muted py-4">No purchases yet.</td>
+          <td colspan="7" class="text-center text-muted py-4">No purchases yet.</td>
         </tr>
       <?php else: ?>
         <?php foreach ($purchases as $purchase): ?>
@@ -97,10 +103,21 @@ require __DIR__ . '/includes/header.php';
             <td><?= (int) $purchase['id'] ?></td>
             <td><?= htmlspecialchars($purchase['purchase_date']) ?></td>
             <td class="fw-semibold"><?= htmlspecialchars($purchase['supplier_name']) ?></td>
+            <td>
+              <?php
+                $paymentSource = $purchase['payment_source'] ?? 'business';
+                if ($paymentSource === 'personal'):
+              ?>
+                <span class="badge text-bg-warning"><?= htmlspecialchars($paymentSourceLabels[$paymentSource]) ?></span>
+              <?php else: ?>
+                <span class="text-muted small"><?= htmlspecialchars($paymentSourceLabels[$paymentSource]) ?></span>
+              <?php endif; ?>
+            </td>
             <td class="text-end"><?= (int) $purchase['item_count'] ?></td>
             <td class="text-end">₱<?= number_format((float) $purchase['total'], 2) ?></td>
-            <td class="text-end">
+            <td class="text-end text-nowrap">
               <a href="purchase_view.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-sm btn-outline-primary">View</a>
+              <a href="purchase_edit.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
             </td>
           </tr>
         <?php endforeach; ?>

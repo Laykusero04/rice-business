@@ -73,12 +73,34 @@ switch ($type) {
              INNER JOIN sales s ON s.id = si.sale_id
              INNER JOIN products p ON p.id = si.product_id
              WHERE s.sale_date BETWEEN ? AND ?
+               AND p.product_type = \'RICE\'
              GROUP BY p.id, p.name
              ORDER BY qty_sold DESC'
         );
         $stmt->execute([$from, $to]);
         foreach ($stmt->fetchAll() as $row) {
             fputcsv($out, [$row['name'], $row['qty_sold'], $row['sales_amount']]);
+        }
+        break;
+
+    case 'top_grocery':
+        fputcsv($out, ['Product', 'Unit', 'Qty Sold', 'Sales Amount']);
+        $stmt = $pdo->prepare(
+            'SELECT p.name,
+                    p.unit,
+                    SUM(si.quantity) AS qty_sold,
+                    SUM(si.subtotal) AS sales_amount
+             FROM sale_items si
+             INNER JOIN sales s ON s.id = si.sale_id
+             INNER JOIN products p ON p.id = si.product_id
+             WHERE s.sale_date BETWEEN ? AND ?
+               AND p.product_type = \'GROCERY\'
+             GROUP BY p.id, p.name, p.unit
+             ORDER BY qty_sold DESC'
+        );
+        $stmt->execute([$from, $to]);
+        foreach ($stmt->fetchAll() as $row) {
+            fputcsv($out, [$row['name'], $row['unit'], $row['qty_sold'], $row['sales_amount']]);
         }
         break;
 
@@ -105,6 +127,7 @@ switch ($type) {
              INNER JOIN sales s ON s.id = si.sale_id
              INNER JOIN products p ON p.id = si.product_id
              WHERE s.sale_date BETWEEN ? AND ?
+               AND p.product_type = \'RICE\'
              GROUP BY p.id, p.name, p.category, p.stock
              ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * p.buying_price), 0)) DESC'
         );
@@ -133,8 +156,10 @@ switch ($type) {
     case 'inventory':
         fputcsv($out, [
             'Product',
+            'Type',
             'Category',
-            'Stock (kg)',
+            'Unit',
+            'Stock',
             'Min Stock',
             'Buying Price',
             'Selling Price',
@@ -144,7 +169,7 @@ switch ($type) {
             'Status',
         ]);
         $stmt = $pdo->query(
-            'SELECT name, category, stock, minimum_stock, buying_price, selling_price, status
+            'SELECT name, product_type, category, unit, stock, minimum_stock, buying_price, selling_price, status
              FROM products
              ORDER BY (stock * buying_price) DESC, name ASC'
         );
@@ -154,7 +179,9 @@ switch ($type) {
             $sellValue = $stock * (float) $row['selling_price'];
             fputcsv($out, [
                 $row['name'],
+                $row['product_type'],
                 $row['category'],
+                $row['unit'],
                 $row['stock'],
                 $row['minimum_stock'],
                 $row['buying_price'],
@@ -171,7 +198,7 @@ switch ($type) {
         fputcsv($out, ['Metric', 'Amount']);
         $totals = $pdo->query(
             'SELECT
-                COALESCE(SUM(stock), 0) AS total_kg,
+                COALESCE(SUM(CASE WHEN product_type = \'RICE\' THEN stock ELSE 0 END), 0) AS rice_stock_kg,
                 COALESCE(SUM(stock * buying_price), 0) AS cost_value,
                 COALESCE(SUM(stock * selling_price), 0) AS sell_value,
                 COALESCE(SUM(CASE WHEN status = \'active\' THEN 1 ELSE 0 END), 0) AS active_count
@@ -179,7 +206,7 @@ switch ($type) {
         )->fetch();
         $costValue = (float) $totals['cost_value'];
         $sellValue = (float) $totals['sell_value'];
-        fputcsv($out, ['Total Stock (kg)', (float) $totals['total_kg']]);
+        fputcsv($out, ['Rice Stock (kg)', (float) $totals['rice_stock_kg']]);
         fputcsv($out, ['Active Products', (int) $totals['active_count']]);
         fputcsv($out, ['Inventory Cost Value', round($costValue, 2)]);
         fputcsv($out, ['Inventory Selling Value', round($sellValue, 2)]);
@@ -192,8 +219,10 @@ switch ($type) {
         fputcsv($out, []);
         fputcsv($out, [
             'Product',
+            'Type',
             'Category',
-            'Stock (kg)',
+            'Unit',
+            'Stock',
             'Buying Price',
             'Selling Price',
             'Cost Value',
@@ -203,7 +232,7 @@ switch ($type) {
             'Status',
         ]);
         $stmt = $pdo->query(
-            'SELECT name, category, stock, buying_price, selling_price, status
+            'SELECT name, product_type, category, unit, stock, buying_price, selling_price, status
              FROM products
              ORDER BY (stock * buying_price) DESC, name ASC'
         );
@@ -215,7 +244,9 @@ switch ($type) {
             $rowMargin = $rowSell > 0 ? round(($rowGp / $rowSell) * 100, 2) : 0;
             fputcsv($out, [
                 $row['name'],
+                $row['product_type'],
                 $row['category'],
+                $row['unit'],
                 $row['stock'],
                 $row['buying_price'],
                 $row['selling_price'],
@@ -228,11 +259,10 @@ switch ($type) {
         }
 
         fputcsv($out, []);
-        fputcsv($out, ['Category', 'Products', 'Stock (kg)', 'Cost Value', 'Selling Value']);
+        fputcsv($out, ['Category', 'Products', 'Cost Value', 'Selling Value']);
         $catStmt = $pdo->query(
             "SELECT COALESCE(NULLIF(category, ''), 'Uncategorized') AS category_name,
                     COUNT(*) AS product_count,
-                    COALESCE(SUM(stock), 0) AS stock,
                     COALESCE(SUM(stock * buying_price), 0) AS cost_value,
                     COALESCE(SUM(stock * selling_price), 0) AS sell_value
              FROM products
@@ -243,7 +273,6 @@ switch ($type) {
             fputcsv($out, [
                 $row['category_name'],
                 $row['product_count'],
-                $row['stock'],
                 round((float) $row['cost_value'], 2),
                 round((float) $row['sell_value'], 2),
             ]);
@@ -281,6 +310,7 @@ switch ($type) {
                     ), 0) AS qty_sold
              FROM products p
              WHERE p.status = 'active'
+               AND p.product_type = 'RICE'
              ORDER BY qty_sold DESC, p.name ASC"
         );
         $stmt->execute([$movementFrom, $movementTo]);
@@ -348,6 +378,7 @@ switch ($type) {
                     ), 0) AS qty_sold
              FROM products p
              WHERE p.status = 'active'
+               AND p.product_type = 'RICE'
              ORDER BY p.name ASC"
         );
         $stmt->execute([$movementFrom, $movementTo]);
@@ -622,6 +653,13 @@ switch ($type) {
         $expenseStmt->execute([$from, $to]);
         $expenseTotal = (float) $expenseStmt->fetchColumn();
 
+        $ownerInvestmentStmt = $pdo->prepare(
+            "SELECT COALESCE(SUM(amount), 0) FROM expenses
+             WHERE expense_date BETWEEN ? AND ? AND category = 'Owner Investment'"
+        );
+        $ownerInvestmentStmt->execute([$from, $to]);
+        $ownerInvestmentTotal = (float) $ownerInvestmentStmt->fetchColumn();
+
         $purchaseStmt = $pdo->prepare(
             'SELECT COALESCE(SUM(total), 0) FROM purchases WHERE purchase_date BETWEEN ? AND ?'
         );
@@ -646,6 +684,7 @@ switch ($type) {
         fputcsv($out, ['Gross Margin %', $grossMargin]);
         fputcsv($out, ['Purchase Total', $purchaseTotal]);
         fputcsv($out, ['Expense Total', $expenseTotal]);
+        fputcsv($out, ['Owner Investment (personal purchases)', $ownerInvestmentTotal]);
         fputcsv($out, ['Net Income (Sales - COGS - Expenses)', $salesTotal - $cogsTotal - $expenseTotal]);
         fputcsv($out, ['Simple Net (Sales - Expenses)', $salesTotal - $expenseTotal]);
         break;

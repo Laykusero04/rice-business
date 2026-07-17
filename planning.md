@@ -20,26 +20,34 @@ That's a good idea. For a small rice business, don't build a complicated ERP sys
 
 ---
 
-### Rice Products
+### Products (Rice + Other Items)
 
-Manage all rice types.
+Manage all products you sell (rice is the main focus, but you can also add items like egg, cooking oil, etc.).
 
 Fields:
 
 * Product Name
-* Category (Premium, Regular, Jasmine, etc.)
+* Product Type (RICE, GROCERY)
+* Category (for rice: Premium/Regular/Jasmine; for grocery: Eggs/Oil/etc.)
+* Unit (kg, pc, L/ml)
 * Buying Price
 * Selling Price
-* Stock (kg)
+* Stock (based on unit; allow decimals for kg/L)
 * Minimum Stock
 * Status
 
+Default behavior (rice-first):
+
+* Products list shows **RICE** by default, with an option to show **GROCERY** or **All**.
+
 Example
 
-| Rice     | Buy | Sell | Stock |
-| -------- | --- | ---- | ----- |
-| Dinorado | ₱45 | ₱55  | 350kg |
-| Jasmine  | ₱50 | ₱62  | 120kg |
+| Product      | Type    | Unit | Buy | Sell | Stock |
+| ------------ | ------- | ---- | --- | ---- | ----- |
+| Dinorado     | RICE    | kg   | ₱45 | ₱55  | 350   |
+| Jasmine      | RICE    | kg   | ₱50 | ₱62  | 120   |
+| Egg          | GROCERY | pc   | ₱6  | ₱8   | 120   |
+| Cooking Oil  | GROCERY | L    | ₱70 | ₱90  | 30    |
 
 ---
 
@@ -51,10 +59,11 @@ Fields
 
 * Customer
 * Date
-* Rice
-* Quantity
+* Items (default list shows rice first; optionally add other items like egg/oil)
+* Quantity (based on unit; enforce whole numbers for `pc`)
 * Price
-* Total
+* Subtotal per item
+* Total (sum of items)
 * Payment Method
 
 When a sale is saved:
@@ -83,13 +92,13 @@ Optional:
 
 ### Purchases
 
-Record rice purchased from suppliers.
+Record purchases from suppliers (rice and other items).
 
 Fields
 
 * Supplier
-* Rice
-* Quantity
+* Items (rice or other items)
+* Quantity (based on unit; enforce whole numbers for `pc`)
 * Buying Price
 * Total
 * Date
@@ -147,9 +156,10 @@ Generate:
 * Daily Sales
 * Weekly Sales
 * Monthly Sales
-* Top Selling Rice
+* Top Selling Rice (filter: `product_type = RICE`)
+* Top Selling Other Items (optional)
 * Expenses
-* Profit
+* Profit (all products; optional rice-only filter)
 * Inventory Report
 
 Export:
@@ -192,7 +202,9 @@ products
 
 * id
 * name
+* product_type (RICE, GROCERY)
 * category
+* unit (kg, pc, L/ml)
 * buying_price
 * selling_price
 * stock

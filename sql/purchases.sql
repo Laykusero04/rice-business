@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS purchases (
   supplier_id INT UNSIGNED NOT NULL,
   total DECIMAL(12, 2) NOT NULL DEFAULT 0.00,
   purchase_date DATE NOT NULL,
+  payment_source ENUM('business', 'personal') NOT NULL DEFAULT 'business',
   notes TEXT DEFAULT NULL,
   user_id INT UNSIGNED DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

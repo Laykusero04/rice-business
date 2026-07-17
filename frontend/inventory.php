@@ -11,12 +11,12 @@ $typeFilter = trim($_GET['type'] ?? '');
 $search = trim($_GET['q'] ?? '');
 
 $products = $pdo->query(
-    "SELECT id, name, category, stock, minimum_stock, status
+    "SELECT id, name, category, unit, stock, minimum_stock, status
      FROM products
      ORDER BY name ASC"
 )->fetchAll();
 
-$movementSql = 'SELECT sm.*, p.name AS product_name
+$movementSql = 'SELECT sm.*, p.name AS product_name, p.unit AS product_unit
                 FROM stock_movements sm
                 INNER JOIN products p ON p.id = sm.product_id
                 WHERE 1=1';
@@ -88,7 +88,7 @@ require __DIR__ . '/includes/header.php';
             <tr>
               <th>Product</th>
               <th>Category</th>
-              <th class="text-end">Stock (kg)</th>
+              <th class="text-end">Stock</th>
               <th class="text-end">Min Stock</th>
               <th>Status</th>
             </tr>
@@ -100,17 +100,22 @@ require __DIR__ . '/includes/header.php';
               </tr>
             <?php else: ?>
               <?php foreach ($products as $product): ?>
-                <?php $isLow = (float) $product['stock'] <= (float) $product['minimum_stock']; ?>
+                <?php
+                  $unit = $product['unit'] ?? 'kg';
+                  $isLow = (float) $product['stock'] <= (float) $product['minimum_stock'];
+                ?>
                 <tr>
                   <td class="fw-semibold"><?= htmlspecialchars($product['name']) ?></td>
                   <td><?= htmlspecialchars($product['category']) ?></td>
                   <td class="text-end <?= $isLow ? 'text-danger fw-semibold' : '' ?>">
-                    <?= number_format((float) $product['stock'], 2) ?>
+                    <?= number_format((float) $product['stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>
                     <?php if ($isLow): ?>
                       <span class="badge text-bg-warning ms-1">Low</span>
                     <?php endif; ?>
                   </td>
-                  <td class="text-end"><?= number_format((float) $product['minimum_stock'], 2) ?></td>
+                  <td class="text-end">
+                    <?= number_format((float) $product['minimum_stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>
+                  </td>
                   <td>
                     <?php if ($product['status'] === 'active'): ?>
                       <span class="badge text-bg-success">Active</span>
@@ -164,7 +169,7 @@ require __DIR__ . '/includes/header.php';
           <th>Date</th>
           <th>Product</th>
           <th>Type</th>
-          <th class="text-end">Qty (kg)</th>
+          <th class="text-end">Qty</th>
           <th>Reference</th>
           <th>Notes</th>
         </tr>
@@ -176,6 +181,7 @@ require __DIR__ . '/includes/header.php';
           </tr>
         <?php else: ?>
           <?php foreach ($movements as $move): ?>
+            <?php $unit = $move['product_unit'] ?? 'kg'; ?>
             <tr>
               <td><?= htmlspecialchars(date('Y-m-d H:i', strtotime($move['created_at']))) ?></td>
               <td class="fw-semibold"><?= htmlspecialchars($move['product_name']) ?></td>
@@ -188,7 +194,9 @@ require __DIR__ . '/includes/header.php';
                   <span class="badge text-bg-secondary">ADJUST</span>
                 <?php endif; ?>
               </td>
-              <td class="text-end"><?= number_format((float) $move['quantity'], 2) ?></td>
+              <td class="text-end">
+                <?= number_format((float) $move['quantity'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>
+              </td>
               <td><?= htmlspecialchars($move['reference'] ?? '—') ?></td>
               <td class="small text-muted"><?= htmlspecialchars($move['notes'] ?? '—') ?></td>
             </tr>
@@ -213,15 +221,16 @@ require __DIR__ . '/includes/header.php';
             <select class="form-select" id="adjustProduct" name="product_id" required>
               <option value="">Select product</option>
               <?php foreach ($products as $product): ?>
-                <option value="<?= (int) $product['id'] ?>">
+                <?php $unit = $product['unit'] ?? 'kg'; ?>
+                <option value="<?= (int) $product['id'] ?>" data-unit="<?= htmlspecialchars($unit) ?>">
                   <?= htmlspecialchars($product['name']) ?>
-                  (<?= number_format((float) $product['stock'], 2) ?> kg)
+                  (<?= number_format((float) $product['stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>)
                 </option>
               <?php endforeach; ?>
             </select>
           </div>
           <div class="mb-3">
-            <label for="adjustQty" class="form-label">Quantity (kg)</label>
+            <label for="adjustQty" class="form-label" id="adjustQtyLabel">Quantity</label>
             <input
               type="number"
               class="form-control"
@@ -231,7 +240,7 @@ require __DIR__ . '/includes/header.php';
               required
               placeholder="Use + to add, - to deduct"
             >
-            <div class="form-text">Example: 10 adds stock, -5 deducts stock.</div>
+            <div class="form-text" id="adjustQtyHelp">Example: 10 adds stock, -5 deducts stock.</div>
           </div>
           <div class="mb-0">
             <label for="adjustNotes" class="form-label">Notes</label>
@@ -246,5 +255,30 @@ require __DIR__ . '/includes/header.php';
     </div>
   </div>
 </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+  const productSelect = document.getElementById('adjustProduct');
+  const qtyInput = document.getElementById('adjustQty');
+  const qtyLabel = document.getElementById('adjustQtyLabel');
+  const qtyHelp = document.getElementById('adjustQtyHelp');
+
+  function updateAdjustUi() {
+    const option = productSelect.selectedOptions[0];
+    const unit = option && option.dataset.unit ? option.dataset.unit : 'kg';
+    qtyLabel.textContent = 'Quantity (' + unit + ')';
+    if (unit === 'pc') {
+      qtyInput.step = '1';
+      qtyHelp.textContent = 'Example: 10 adds stock, -5 deducts stock. Use whole numbers for pc.';
+    } else {
+      qtyInput.step = '0.01';
+      qtyHelp.textContent = 'Example: 10 adds stock, -5 deducts stock.';
+    }
+  }
+
+  productSelect.addEventListener('change', updateAdjustUi);
+  updateAdjustUi();
+});
+</script>
 
 <?php require __DIR__ . '/includes/footer.php'; ?>

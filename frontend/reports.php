@@ -33,6 +33,15 @@ $expenseTotalStmt = $pdo->prepare(
 $expenseTotalStmt->execute([$from, $to]);
 $expenseTotal = (float) $expenseTotalStmt->fetchColumn();
 
+$ownerInvestmentStmt = $pdo->prepare(
+    "SELECT COALESCE(SUM(amount), 0) FROM expenses
+     WHERE expense_date BETWEEN ? AND ? AND category = 'Owner Investment'"
+);
+$ownerInvestmentStmt->execute([$from, $to]);
+$ownerInvestmentTotal = (float) $ownerInvestmentStmt->fetchColumn();
+
+$operatingExpensesTotal = $expenseTotal - $ownerInvestmentTotal;
+
 $purchaseTotalStmt = $pdo->prepare(
     'SELECT COALESCE(SUM(total), 0) FROM purchases WHERE purchase_date BETWEEN ? AND ?'
 );
@@ -186,18 +195,37 @@ $gpMomPercent = $prevMonthGp != 0.0
 
 $topProductsStmt = $pdo->prepare(
     'SELECT p.name,
+            p.unit,
             SUM(si.quantity) AS qty_sold,
             SUM(si.subtotal) AS sales_amount
      FROM sale_items si
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id
      WHERE s.sale_date BETWEEN ? AND ?
+       AND p.product_type = \'RICE\'
      GROUP BY p.id, p.name
      ORDER BY qty_sold DESC
      LIMIT 10'
 );
 $topProductsStmt->execute([$from, $to]);
 $topProducts = $topProductsStmt->fetchAll();
+
+$topOtherProductsStmt = $pdo->prepare(
+    'SELECT p.name,
+            p.unit,
+            SUM(si.quantity) AS qty_sold,
+            SUM(si.subtotal) AS sales_amount
+     FROM sale_items si
+     INNER JOIN sales s ON s.id = si.sale_id
+     INNER JOIN products p ON p.id = si.product_id
+     WHERE s.sale_date BETWEEN ? AND ?
+       AND p.product_type = \'GROCERY\'
+     GROUP BY p.id, p.name, p.unit
+     ORDER BY qty_sold DESC
+     LIMIT 10'
+);
+$topOtherProductsStmt->execute([$from, $to]);
+$topOtherProducts = $topOtherProductsStmt->fetchAll();
 
 $profitByVarietyStmt = $pdo->prepare(
     'SELECT p.id,
@@ -211,6 +239,7 @@ $profitByVarietyStmt = $pdo->prepare(
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id
      WHERE s.sale_date BETWEEN ? AND ?
+       AND p.product_type = \'RICE\'
      GROUP BY p.id, p.name, p.category, p.stock
      ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * p.buying_price), 0)) DESC'
 );
@@ -249,6 +278,52 @@ foreach ($profitByVariety as $index => $row) {
     }
 }
 
+$profitByGroceryStmt = $pdo->prepare(
+    'SELECT p.id,
+            p.name,
+            p.category,
+            p.unit,
+            p.stock,
+            COALESCE(SUM(si.quantity), 0) AS qty_sold,
+            COALESCE(SUM(si.subtotal), 0) AS sales_amount,
+            COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+     FROM sale_items si
+     INNER JOIN sales s ON s.id = si.sale_id
+     INNER JOIN products p ON p.id = si.product_id
+     WHERE s.sale_date BETWEEN ? AND ?
+       AND p.product_type = \'GROCERY\'
+     GROUP BY p.id, p.name, p.category, p.unit, p.stock
+     ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * p.buying_price), 0)) DESC'
+);
+$profitByGroceryStmt->execute([$from, $to]);
+$profitByGrocery = $profitByGroceryStmt->fetchAll();
+
+$topProfitGrocery = null;
+foreach ($profitByGrocery as $index => $row) {
+    $salesAmt = (float) $row['sales_amount'];
+    $cogsAmt = (float) $row['cogs'];
+    $gp = $salesAmt - $cogsAmt;
+    $margin = $salesAmt > 0 ? ($gp / $salesAmt) * 100 : 0.0;
+    $qty = (float) $row['qty_sold'];
+    $unit = $row['unit'] ?? 'pc';
+    $profitPerUnit = $qty > 0 ? $gp / $qty : 0.0;
+
+    $profitByGrocery[$index]['gross_profit'] = $gp;
+    $profitByGrocery[$index]['margin'] = $margin;
+    $profitByGrocery[$index]['profit_per_unit'] = $profitPerUnit;
+
+    if ($topProfitGrocery === null || $gp > $topProfitGrocery['gross_profit']) {
+        $topProfitGrocery = $profitByGrocery[$index];
+    }
+}
+
+$groceryStock = $pdo->query(
+    "SELECT name, category, unit, stock, minimum_stock, buying_price, selling_price
+     FROM products
+     WHERE product_type = 'GROCERY' AND status = 'active'
+     ORDER BY name ASC"
+)->fetchAll();
+
 $expensesByCategoryStmt = $pdo->prepare(
     'SELECT category, COALESCE(SUM(amount), 0) AS total
      FROM expenses
@@ -260,7 +335,7 @@ $expensesByCategoryStmt->execute([$from, $to]);
 $expensesByCategory = $expensesByCategoryStmt->fetchAll();
 
 $inventory = $pdo->query(
-    'SELECT id, name, category, stock, minimum_stock, buying_price, selling_price, status
+    'SELECT id, name, product_type, category, unit, stock, minimum_stock, buying_price, selling_price, status
      FROM products
      ORDER BY (stock * buying_price) DESC, name ASC'
 )->fetchAll();
@@ -268,8 +343,9 @@ $inventory = $pdo->query(
 $lowStockCount = 0;
 $inventoryCostValue = 0.0;
 $inventorySellValue = 0.0;
-$inventoryTotalKg = 0.0;
+$inventoryRiceKg = 0.0;
 $inventoryActiveCount = 0;
+$inventoryGroceryCount = 0;
 $inventoryValueByCategory = [];
 $valueChartLabels = [];
 $valueChartCost = [];
@@ -291,10 +367,15 @@ foreach ($inventory as $index => $item) {
 
     $inventoryCostValue += $costValue;
     $inventorySellValue += $sellValue;
-    $inventoryTotalKg += $stock;
+    if (($item['product_type'] ?? 'RICE') === 'RICE' && ($item['unit'] ?? 'kg') === 'kg') {
+        $inventoryRiceKg += $stock;
+    }
 
     if ($item['status'] === 'active') {
         $inventoryActiveCount++;
+        if (($item['product_type'] ?? 'RICE') === 'GROCERY') {
+            $inventoryGroceryCount++;
+        }
     }
 
     if ((float) $item['stock'] <= (float) $item['minimum_stock']) {
@@ -306,13 +387,11 @@ foreach ($inventory as $index => $item) {
         $inventoryValueByCategory[$category] = [
             'cost_value' => 0.0,
             'sell_value' => 0.0,
-            'stock' => 0.0,
             'products' => 0,
         ];
     }
     $inventoryValueByCategory[$category]['cost_value'] += $costValue;
     $inventoryValueByCategory[$category]['sell_value'] += $sellValue;
-    $inventoryValueByCategory[$category]['stock'] += $stock;
     $inventoryValueByCategory[$category]['products']++;
 }
 
@@ -355,6 +434,7 @@ $movementStmt = $pdo->prepare(
             ), 0) AS qty_sold
      FROM products p
      WHERE p.status = 'active'
+       AND p.product_type = 'RICE'
      ORDER BY qty_sold DESC, p.name ASC"
 );
 $movementStmt->execute([$movementFrom, $movementTo]);
@@ -726,7 +806,8 @@ require __DIR__ . '/includes/header.php';
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=profit_by_variety">Profit by Variety</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=sales">Sales</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=expenses">Expenses</a></li>
-        <li><a class="dropdown-item" href="<?= $exportBase ?>&type=top_products">Top Products</a></li>
+        <li><a class="dropdown-item" href="<?= $exportBase ?>&type=top_products">Top Selling Rice</a></li>
+        <li><a class="dropdown-item" href="<?= $exportBase ?>&type=top_grocery">Top Selling Other Items</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=inventory_movement">Inventory Movement</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=stock_forecast">Stock Forecast</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=inventory_value">Inventory Value</a></li>
@@ -809,6 +890,15 @@ require __DIR__ . '/includes/header.php';
     <div class="bg-white rounded shadow-sm p-3 h-100">
       <div class="text-muted small">Expenses</div>
       <div class="fs-5 fw-bold text-danger">₱<?= number_format($expenseTotal, 2) ?></div>
+      <?php if ($ownerInvestmentTotal > 0): ?>
+        <div class="small text-muted">
+          Includes ₱<?= number_format($ownerInvestmentTotal, 2) ?> owner investment
+          (personal purchases)
+        </div>
+      <?php endif; ?>
+      <?php if ($operatingExpensesTotal > 0 && $ownerInvestmentTotal > 0): ?>
+        <div class="small text-muted">Operating: ₱<?= number_format($operatingExpensesTotal, 2) ?></div>
+      <?php endif; ?>
     </div>
   </div>
   <div class="col-md-3">
@@ -1221,7 +1311,7 @@ require __DIR__ . '/includes/header.php';
               <?php foreach ($topProducts as $row): ?>
                 <tr>
                   <td class="fw-semibold"><?= htmlspecialchars($row['name']) ?></td>
-                  <td class="text-end"><?= number_format((float) $row['qty_sold'], 2) ?></td>
+                  <td class="text-end"><?= number_format((float) $row['qty_sold'], 2) ?> kg</td>
                   <td class="text-end">₱<?= number_format((float) $row['sales_amount'], 2) ?></td>
                 </tr>
               <?php endforeach; ?>
@@ -1229,6 +1319,135 @@ require __DIR__ . '/includes/header.php';
           </table>
         </div>
         <p class="small text-muted mb-0 mt-2">Volume leaders may differ from profit leaders.</p>
+      <?php endif; ?>
+    </div>
+    <div class="bg-white rounded shadow-sm p-3 mt-3">
+      <h2 class="h6 mb-3">Top Selling Other Items (by volume)</h2>
+      <?php if (count($topOtherProducts) === 0): ?>
+        <p class="text-muted mb-0">No other-item sales in this period.</p>
+      <?php else: ?>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th class="text-end">Qty</th>
+                <th class="text-end">Sales</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($topOtherProducts as $row): ?>
+                <?php $unit = $row['unit'] ?? 'pc'; ?>
+                <tr>
+                  <td class="fw-semibold"><?= htmlspecialchars($row['name']) ?></td>
+                  <td class="text-end">
+                    <?= number_format((float) $row['qty_sold'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>
+                  </td>
+                  <td class="text-end">₱<?= number_format((float) $row['sales_amount'], 2) ?></td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      <?php endif; ?>
+    </div>
+  </div>
+</div>
+
+<div class="row g-3 mb-4">
+  <div class="col-lg-8">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <h2 class="h6 mb-1">Profit per Other Item</h2>
+      <p class="small text-muted mb-3">Grocery and non-rice products in the selected period</p>
+      <?php if (count($profitByGrocery) === 0): ?>
+        <p class="text-muted mb-0">No other-item sales in this period.</p>
+      <?php else: ?>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Product</th>
+                <th class="text-end">Qty</th>
+                <th class="text-end">Sales</th>
+                <th class="text-end">COGS</th>
+                <th class="text-end">Gross Profit</th>
+                <th class="text-end">Margin</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($profitByGrocery as $i => $row): ?>
+                <?php $unit = $row['unit'] ?? 'pc'; ?>
+                <tr>
+                  <td><?= $i + 1 ?></td>
+                  <td>
+                    <div class="fw-semibold"><?= htmlspecialchars($row['name']) ?></div>
+                    <div class="small text-muted"><?= htmlspecialchars($row['category']) ?></div>
+                  </td>
+                  <td class="text-end">
+                    <?= number_format((float) $row['qty_sold'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>
+                  </td>
+                  <td class="text-end">₱<?= number_format((float) $row['sales_amount'], 2) ?></td>
+                  <td class="text-end">₱<?= number_format((float) $row['cogs'], 2) ?></td>
+                  <td class="text-end text-success fw-semibold">₱<?= number_format((float) $row['gross_profit'], 2) ?></td>
+                  <td class="text-end"><?= number_format((float) $row['margin'], 1) ?>%</td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
+      <?php endif; ?>
+    </div>
+  </div>
+  <div class="col-lg-4">
+    <div class="bg-white rounded shadow-sm p-3 mb-3">
+      <div class="text-muted small">Most profitable other item</div>
+      <?php if ($topProfitGrocery): ?>
+        <?php $gpUnit = $topProfitGrocery['unit'] ?? 'pc'; ?>
+        <div class="fw-semibold fs-5"><?= htmlspecialchars($topProfitGrocery['name']) ?></div>
+        <div class="fs-4 fw-bold text-success">₱<?= number_format((float) $topProfitGrocery['gross_profit'], 2) ?></div>
+        <div class="small text-muted">
+          <?= number_format((float) $topProfitGrocery['qty_sold'], $gpUnit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($gpUnit) ?> sold ·
+          <?= number_format((float) $topProfitGrocery['margin'], 1) ?>% margin
+        </div>
+      <?php else: ?>
+        <div class="text-muted">No other-item sales in this period.</div>
+      <?php endif; ?>
+    </div>
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <h2 class="h6 mb-3">Other Items — Current Stock</h2>
+      <?php if (count($groceryStock) === 0): ?>
+        <p class="text-muted mb-0">No active other items in inventory.</p>
+      <?php else: ?>
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th class="text-end">Stock</th>
+                <th class="text-end">Sell</th>
+              </tr>
+            </thead>
+            <tbody>
+              <?php foreach ($groceryStock as $item): ?>
+                <?php
+                  $unit = $item['unit'] ?? 'pc';
+                  $isLow = (float) $item['stock'] <= (float) $item['minimum_stock'];
+                ?>
+                <tr>
+                  <td>
+                    <div class="fw-semibold"><?= htmlspecialchars($item['name']) ?></div>
+                    <div class="small text-muted"><?= htmlspecialchars($item['category']) ?></div>
+                  </td>
+                  <td class="text-end <?= $isLow ? 'text-danger fw-semibold' : '' ?>">
+                    <?= number_format((float) $item['stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>
+                  </td>
+                  <td class="text-end">₱<?= number_format((float) $item['selling_price'], 2) ?></td>
+                </tr>
+              <?php endforeach; ?>
+            </tbody>
+          </table>
+        </div>
       <?php endif; ?>
     </div>
   </div>
@@ -1640,7 +1859,9 @@ require __DIR__ . '/includes/header.php';
           <div class="border rounded p-3 h-100">
             <div class="text-muted small">Cost value (capital)</div>
             <div class="fs-4 fw-bold">₱<?= number_format($inventoryCostValue, 2) ?></div>
-            <div class="small text-muted"><?= number_format($inventoryTotalKg, 2) ?> kg on hand</div>
+            <div class="small text-muted">
+              <?= number_format($inventoryRiceKg, 2) ?> kg rice · <?= $inventoryGroceryCount ?> other item(s)
+            </div>
           </div>
         </div>
         <div class="col-md-3">
@@ -1681,6 +1902,7 @@ require __DIR__ . '/includes/header.php';
               <thead>
                 <tr>
                   <th>Product</th>
+                  <th>Type</th>
                   <th class="text-end">Stock</th>
                   <th class="text-end">Buy</th>
                   <th class="text-end">Sell</th>
@@ -1693,18 +1915,29 @@ require __DIR__ . '/includes/header.php';
               <tbody>
                 <?php if (count($inventory) === 0): ?>
                   <tr>
-                    <td colspan="8" class="text-muted text-center">No products.</td>
+                    <td colspan="9" class="text-muted text-center">No products.</td>
                   </tr>
                 <?php else: ?>
                   <?php foreach ($inventory as $item): ?>
-                    <?php $isLow = (float) $item['stock'] <= (float) $item['minimum_stock']; ?>
+                    <?php
+                      $unit = $item['unit'] ?? 'kg';
+                      $isLow = (float) $item['stock'] <= (float) $item['minimum_stock'];
+                      $isGrocery = ($item['product_type'] ?? 'RICE') === 'GROCERY';
+                    ?>
                     <tr>
                       <td>
                         <div class="fw-semibold"><?= htmlspecialchars($item['name']) ?></div>
                         <div class="small text-muted"><?= htmlspecialchars($item['category']) ?></div>
                       </td>
+                      <td>
+                        <?php if ($isGrocery): ?>
+                          <span class="badge text-bg-info">Other</span>
+                        <?php else: ?>
+                          <span class="badge text-bg-primary">Rice</span>
+                        <?php endif; ?>
+                      </td>
                       <td class="text-end <?= $isLow ? 'text-danger fw-semibold' : '' ?>">
-                        <?= number_format((float) $item['stock'], 2) ?>
+                        <?= number_format((float) $item['stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>
                       </td>
                       <td class="text-end">₱<?= number_format((float) $item['buying_price'], 2) ?></td>
                       <td class="text-end">₱<?= number_format((float) $item['selling_price'], 2) ?></td>
@@ -1729,8 +1962,8 @@ require __DIR__ . '/includes/header.php';
               <?php if (count($inventory) > 0): ?>
                 <tfoot>
                   <tr class="fw-semibold">
-                    <td>Total</td>
-                    <td class="text-end"><?= number_format($inventoryTotalKg, 2) ?></td>
+                    <td colspan="2">Total</td>
+                    <td class="text-end">—</td>
                     <td></td>
                     <td></td>
                     <td class="text-end">₱<?= number_format($inventoryCostValue, 2) ?></td>
@@ -1756,7 +1989,6 @@ require __DIR__ . '/includes/header.php';
                   <tr>
                     <th>Category</th>
                     <th class="text-end">Products</th>
-                    <th class="text-end">Stock</th>
                     <th class="text-end">Cost value</th>
                     <th class="text-end">Sell value</th>
                   </tr>
@@ -1766,7 +1998,6 @@ require __DIR__ . '/includes/header.php';
                     <tr>
                       <td class="fw-semibold"><?= htmlspecialchars($category) ?></td>
                       <td class="text-end"><?= (int) $data['products'] ?></td>
-                      <td class="text-end"><?= number_format((float) $data['stock'], 2) ?></td>
                       <td class="text-end">₱<?= number_format((float) $data['cost_value'], 2) ?></td>
                       <td class="text-end">₱<?= number_format((float) $data['sell_value'], 2) ?></td>
                     </tr>

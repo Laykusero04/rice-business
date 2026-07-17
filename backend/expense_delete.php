@@ -18,6 +18,14 @@ if ($id <= 0) {
 }
 
 try {
+    $linkedStmt = $pdo->prepare('SELECT purchase_id FROM expenses WHERE id = ?');
+    $linkedStmt->execute([$id]);
+    $linked = $linkedStmt->fetch();
+    if ($linked && !empty($linked['purchase_id'])) {
+        header('Location: /rice-business/frontend/expenses.php?error=linked');
+        exit;
+    }
+
     $stmt = $pdo->prepare('DELETE FROM expenses WHERE id = ?');
     $stmt->execute([$id]);
     header('Location: /rice-business/frontend/expenses.php?success=deleted');

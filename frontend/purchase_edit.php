@@ -4,14 +4,43 @@ require_once __DIR__ . '/../backend/conn.php';
 requireLogin();
 
 $user = currentUser();
-$pageTitle = 'New Purchase';
-$activePage = 'purchases-new';
+$pageTitle = 'Edit Purchase';
+$activePage = 'purchases-history';
+
+$id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+
+if ($id <= 0) {
+    header('Location: /rice-business/frontend/purchases.php');
+    exit;
+}
+
+$purchaseStmt = $pdo->prepare('SELECT * FROM purchases WHERE id = ? LIMIT 1');
+$purchaseStmt->execute([$id]);
+$purchase = $purchaseStmt->fetch();
+
+if (!$purchase) {
+    header('Location: /rice-business/frontend/purchases.php?error=notfound');
+    exit;
+}
+
+$itemStmt = $pdo->prepare(
+    'SELECT pi.*, pr.product_type, pr.unit, pr.kg_per_sack
+     FROM purchase_items pi
+     INNER JOIN products pr ON pr.id = pi.product_id
+     WHERE pi.purchase_id = ?
+     ORDER BY pi.id ASC'
+);
+$itemStmt->execute([$id]);
+$purchaseItems = $itemStmt->fetchAll();
+
+$itemProductIds = array_unique(array_map(static fn ($item) => (int) $item['product_id'], $purchaseItems));
+$idsList = count($itemProductIds) > 0 ? implode(',', $itemProductIds) : '0';
 
 $suppliers = $pdo->query('SELECT id, name FROM suppliers ORDER BY name ASC')->fetchAll();
 $products = $pdo->query(
     "SELECT id, name, product_type, unit, buying_price, kg_per_sack, stock
      FROM products
-     WHERE status = 'active'
+     WHERE status = 'active' OR id IN ($idsList)
      ORDER BY (product_type = 'RICE') DESC, name ASC"
 )->fetchAll();
 
@@ -25,19 +54,45 @@ foreach ($products as $p) {
     }
 }
 
-$flash = '';
-$flashType = 'danger';
-
 $paymentSourceLabels = [
     'business' => 'Business funds',
     'personal' => 'Personal money (mine)',
 ];
+$paymentSource = $purchase['payment_source'] ?? 'business';
+
+$formItems = [];
+foreach ($purchaseItems as $item) {
+    $productType = $item['product_type'] ?? 'RICE';
+    if ($productType === 'RICE') {
+        $kgPerSack = (float) ($item['kg_per_sack'] ?? 25);
+        if ($kgPerSack <= 0) {
+            $kgPerSack = 25;
+        }
+        $qtyInput = (float) $item['quantity'] / $kgPerSack;
+        $unitPriceInput = (float) $item['buying_price'] * $kgPerSack;
+    } else {
+        $qtyInput = (float) $item['quantity'];
+        $unitPriceInput = (float) $item['buying_price'];
+    }
+
+    $formItems[] = [
+        'product_id' => (int) $item['product_id'],
+        'quantity' => round($qtyInput, 2),
+        'unit_price' => round($unitPriceInput, 2),
+    ];
+}
+
+$flash = '';
+$flashType = 'danger';
 
 if (isset($_GET['error'])) {
     $flash = match ($_GET['error']) {
         'required' => 'Supplier and purchase date are required.',
         'items' => 'Add at least one valid product line.',
-        'save' => 'Could not save the purchase. Please try again.',
+        'stock' => 'Cannot update — not enough stock left for '
+            . htmlspecialchars($_GET['product'] ?? 'a product')
+            . '. Some of this purchase may already be sold.',
+        'save' => 'Could not update the purchase. Please try again.',
         default => 'Something went wrong.',
     };
 }
@@ -47,15 +102,20 @@ require __DIR__ . '/includes/header.php';
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
-    <h1 class="h3 mb-1">New Purchase</h1>
-    <p class="text-muted mb-0">Rice is bought by sack (stock added in kg). Other items are bought directly by unit (pc/L/ml).</p>
+    <h1 class="h3 mb-1">Edit Purchase #<?= (int) $purchase['id'] ?></h1>
+    <p class="text-muted mb-0">
+      Changing items reverses the old stock-in, then applies the new quantities.
+    </p>
   </div>
-  <a href="purchases.php" class="btn btn-outline-secondary">Purchase History</a>
+  <div class="d-flex gap-2">
+    <a href="purchase_view.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-outline-secondary">View</a>
+    <a href="purchases.php" class="btn btn-outline-secondary">Purchase History</a>
+  </div>
 </div>
 
 <?php if ($flash !== ''): ?>
   <div class="alert alert-<?= htmlspecialchars($flashType) ?> alert-dismissible fade show" role="alert">
-    <?= htmlspecialchars($flash) ?>
+    <?= $flash ?>
     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
   </div>
 <?php endif; ?>
@@ -63,40 +123,63 @@ require __DIR__ . '/includes/header.php';
 <?php if (count($suppliers) === 0 || count($products) === 0): ?>
   <div class="alert alert-warning">
     <?php if (count($suppliers) === 0): ?>
-      Add at least one <a href="suppliers.php">supplier</a> before creating a purchase.
+      Add at least one <a href="suppliers.php">supplier</a> before editing a purchase.
     <?php endif; ?>
     <?php if (count($products) === 0): ?>
-      Add at least one active <a href="products.php">product</a> before creating a purchase.
+      Add at least one <a href="products.php">product</a> before editing a purchase.
     <?php endif; ?>
   </div>
 <?php else: ?>
   <form method="POST" action="/rice-business/backend/purchase_save.php" id="purchaseForm" class="bg-white rounded shadow-sm p-3 p-md-4">
+    <input type="hidden" name="id" value="<?= (int) $purchase['id'] ?>">
+
     <div class="row g-3 mb-4">
       <div class="col-md-5">
         <label for="supplierId" class="form-label">Supplier</label>
         <select class="form-select" id="supplierId" name="supplier_id" required>
           <option value="">Select supplier</option>
           <?php foreach ($suppliers as $supplier): ?>
-            <option value="<?= (int) $supplier['id'] ?>"><?= htmlspecialchars($supplier['name']) ?></option>
+            <option
+              value="<?= (int) $supplier['id'] ?>"
+              <?= (int) $purchase['supplier_id'] === (int) $supplier['id'] ? 'selected' : '' ?>
+            >
+              <?= htmlspecialchars($supplier['name']) ?>
+            </option>
           <?php endforeach; ?>
         </select>
       </div>
       <div class="col-md-3">
         <label for="purchaseDate" class="form-label">Date</label>
-        <input type="date" class="form-control" id="purchaseDate" name="purchase_date" value="<?= date('Y-m-d') ?>" required>
+        <input
+          type="date"
+          class="form-control"
+          id="purchaseDate"
+          name="purchase_date"
+          value="<?= htmlspecialchars($purchase['purchase_date']) ?>"
+          required
+        >
       </div>
       <div class="col-md-4">
         <label for="paymentSource" class="form-label">Paid with</label>
         <select class="form-select" id="paymentSource" name="payment_source" required>
           <?php foreach ($paymentSourceLabels as $value => $label): ?>
-            <option value="<?= htmlspecialchars($value) ?>"><?= htmlspecialchars($label) ?></option>
+            <option value="<?= htmlspecialchars($value) ?>" <?= $paymentSource === $value ? 'selected' : '' ?>>
+              <?= htmlspecialchars($label) ?>
+            </option>
           <?php endforeach; ?>
         </select>
         <div class="form-text">Personal money is recorded as Owner Investment in Expenses.</div>
       </div>
       <div class="col-12">
         <label for="notes" class="form-label">Notes</label>
-        <input type="text" class="form-control" id="notes" name="notes" placeholder="Optional">
+        <input
+          type="text"
+          class="form-control"
+          id="notes"
+          name="notes"
+          value="<?= htmlspecialchars($purchase['notes'] ?? '') ?>"
+          placeholder="Optional"
+        >
       </div>
     </div>
 
@@ -131,8 +214,8 @@ require __DIR__ . '/includes/header.php';
     </div>
 
     <div class="d-flex gap-2">
-      <button type="submit" class="btn btn-rice">Save Purchase</button>
-      <a href="purchases.php" class="btn btn-outline-secondary">Cancel</a>
+      <button type="submit" class="btn btn-rice">Update Purchase</button>
+      <a href="purchase_view.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-outline-secondary">Cancel</a>
     </div>
   </form>
 
@@ -208,6 +291,8 @@ require __DIR__ . '/includes/header.php';
     const template = document.getElementById('itemRowTemplate');
     const grandTotalEl = document.getElementById('grandTotal');
 
+    const existingItems = <?= json_encode($formItems, JSON_UNESCAPED_UNICODE) ?>;
+
     function formatMoney(value) {
       return '₱' + Number(value).toLocaleString(undefined, {
         minimumFractionDigits: 2,
@@ -236,42 +321,51 @@ require __DIR__ . '/includes/header.php';
       grandTotalEl.textContent = formatMoney(total);
     }
 
-    function bindRow(row) {
+    function applyProductUi(row, preserveValues) {
       const productSelect = row.querySelector('.product-select');
       const unitPriceInput = row.querySelector('.unit-price-input');
       const qtyInput = row.querySelector('.qty-input');
       const qtyHint = row.querySelector('.qty-hint');
       const priceHint = row.querySelector('.price-hint');
+      const option = productSelect.selectedOptions[0];
+      const productType = option && option.dataset.productType ? option.dataset.productType : 'RICE';
+      const unit = option && option.dataset.unit ? option.dataset.unit : 'kg';
 
-      productSelect.addEventListener('change', function () {
-        const option = productSelect.selectedOptions[0];
-        const productType = option && option.dataset.productType ? option.dataset.productType : 'RICE';
-        const unit = option && option.dataset.unit ? option.dataset.unit : 'kg';
-        if (option && option.dataset.unitPrice) {
-          unitPriceInput.value = option.dataset.unitPrice;
-        }
-        if (productType === 'RICE') {
-          qtyHint.textContent = 'sack';
-          priceHint.textContent = '₱ / sack';
+      if (!preserveValues && option && option.dataset.unitPrice) {
+        unitPriceInput.value = option.dataset.unitPrice;
+      }
+
+      if (productType === 'RICE') {
+        qtyHint.textContent = 'sack';
+        priceHint.textContent = '₱ / sack';
+        qtyInput.step = '0.01';
+        qtyInput.min = '0.01';
+      } else {
+        qtyHint.textContent = unit;
+        priceHint.textContent = '₱ / ' + unit;
+        if (unit === 'pc') {
+          qtyInput.step = '1';
+          qtyInput.min = '1';
+          if (!preserveValues) {
+            qtyInput.value = String(Math.max(1, Math.round(parseFloat(qtyInput.value) || 1)));
+          }
+        } else {
           qtyInput.step = '0.01';
           qtyInput.min = '0.01';
-        } else {
-          qtyHint.textContent = unit;
-          priceHint.textContent = '₱ / ' + unit;
-          if (unit === 'pc') {
-            qtyInput.step = '1';
-            qtyInput.min = '1';
-            qtyInput.value = String(Math.max(1, Math.round(parseFloat(qtyInput.value) || 1)));
-          } else {
-            qtyInput.step = '0.01';
-            qtyInput.min = '0.01';
-          }
         }
+      }
+    }
+
+    function bindRow(row) {
+      const productSelect = row.querySelector('.product-select');
+
+      productSelect.addEventListener('change', function () {
+        applyProductUi(row, false);
         recalc();
       });
 
-      qtyInput.addEventListener('input', recalc);
-      unitPriceInput.addEventListener('input', recalc);
+      row.querySelector('.qty-input').addEventListener('input', recalc);
+      row.querySelector('.unit-price-input').addEventListener('input', recalc);
 
       row.querySelector('.btn-remove-row').addEventListener('click', function () {
         if (tbody.querySelectorAll('tr').length === 1) {
@@ -282,16 +376,35 @@ require __DIR__ . '/includes/header.php';
       });
     }
 
-    function addRow() {
+    function addRow(item) {
       const node = template.content.cloneNode(true);
       const row = node.querySelector('tr');
       tbody.appendChild(row);
       bindRow(row);
+
+      if (item) {
+        row.querySelector('.product-select').value = String(item.product_id);
+        applyProductUi(row, true);
+        row.querySelector('.qty-input').value = item.quantity;
+        row.querySelector('.unit-price-input').value = item.unit_price;
+      } else {
+        applyProductUi(row, false);
+      }
+
       recalc();
     }
 
-    document.getElementById('btnAddRow').addEventListener('click', addRow);
-    addRow();
+    document.getElementById('btnAddRow').addEventListener('click', function () {
+      addRow(null);
+    });
+
+    if (existingItems.length > 0) {
+      existingItems.forEach(function (item) {
+        addRow(item);
+      });
+    } else {
+      addRow(null);
+    }
   });
   </script>
 <?php endif; ?>

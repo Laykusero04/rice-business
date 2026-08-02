@@ -99,26 +99,134 @@ $todayExpensesStmt = $pdo->prepare(
 $todayExpensesStmt->execute([$today]);
 $todayExpenses = (float) $todayExpensesStmt->fetchColumn();
 
-$weekStart = date('Y-m-d', strtotime('-6 days'));
-$weekSalesStmt = $pdo->prepare(
-    'SELECT sale_date, COALESCE(SUM(total), 0) AS total
-     FROM sales
-     WHERE sale_date BETWEEN ? AND ?
-     GROUP BY sale_date'
-);
-$weekSalesStmt->execute([$weekStart, $today]);
-$weekSalesByDate = [];
-foreach ($weekSalesStmt->fetchAll() as $row) {
-    $weekSalesByDate[$row['sale_date']] = (float) $row['total'];
+$range = trim($_GET['range'] ?? 'week');
+if (!in_array($range, ['week', 'month', 'year', 'all'], true)) {
+    $range = 'week';
+}
+
+$chartTo = $today;
+if ($range === 'week') {
+    $chartFrom = date('Y-m-d', strtotime('-6 days'));
+    $chartGrain = 'daily';
+    $rangeLabel = 'Last 7 Days';
+} elseif ($range === 'month') {
+    $chartFrom = $monthStart;
+    $chartGrain = 'daily';
+    $rangeLabel = date('F Y');
+} elseif ($range === 'year') {
+    $chartFrom = date('Y-01-01');
+    $chartGrain = 'monthly';
+    $rangeLabel = date('Y');
+} else {
+    $earliest = $pdo->query(
+        "SELECT MIN(d) FROM (
+            SELECT MIN(sale_date) AS d FROM sales
+            UNION ALL
+            SELECT MIN(expense_date) FROM expenses
+            UNION ALL
+            SELECT MIN(purchase_date) FROM purchases
+         ) AS dates"
+    )->fetchColumn();
+    $chartFrom = $earliest ?: $today;
+    $chartGrain = 'monthly';
+    $rangeLabel = 'All Time';
+}
+
+$salesByBucket = [];
+$expensesByBucket = [];
+$purchasesByBucket = [];
+
+if ($chartGrain === 'daily') {
+    $salesStmt = $pdo->prepare(
+        'SELECT sale_date AS bucket, COALESCE(SUM(total), 0) AS total
+         FROM sales
+         WHERE sale_date BETWEEN ? AND ?
+         GROUP BY sale_date'
+    );
+    $expensesStmt = $pdo->prepare(
+        'SELECT expense_date AS bucket, COALESCE(SUM(amount), 0) AS total
+         FROM expenses
+         WHERE expense_date BETWEEN ? AND ?
+         GROUP BY expense_date'
+    );
+    $purchasesStmt = $pdo->prepare(
+        'SELECT purchase_date AS bucket, COALESCE(SUM(total), 0) AS total
+         FROM purchases
+         WHERE purchase_date BETWEEN ? AND ?
+         GROUP BY purchase_date'
+    );
+} else {
+    $salesStmt = $pdo->prepare(
+        "SELECT DATE_FORMAT(sale_date, '%Y-%m') AS bucket, COALESCE(SUM(total), 0) AS total
+         FROM sales
+         WHERE sale_date BETWEEN ? AND ?
+         GROUP BY DATE_FORMAT(sale_date, '%Y-%m')
+         ORDER BY bucket ASC"
+    );
+    $expensesStmt = $pdo->prepare(
+        "SELECT DATE_FORMAT(expense_date, '%Y-%m') AS bucket, COALESCE(SUM(amount), 0) AS total
+         FROM expenses
+         WHERE expense_date BETWEEN ? AND ?
+         GROUP BY DATE_FORMAT(expense_date, '%Y-%m')
+         ORDER BY bucket ASC"
+    );
+    $purchasesStmt = $pdo->prepare(
+        "SELECT DATE_FORMAT(purchase_date, '%Y-%m') AS bucket, COALESCE(SUM(total), 0) AS total
+         FROM purchases
+         WHERE purchase_date BETWEEN ? AND ?
+         GROUP BY DATE_FORMAT(purchase_date, '%Y-%m')
+         ORDER BY bucket ASC"
+    );
+}
+
+$salesStmt->execute([$chartFrom, $chartTo]);
+foreach ($salesStmt->fetchAll() as $row) {
+    $salesByBucket[$row['bucket']] = (float) $row['total'];
+}
+$expensesStmt->execute([$chartFrom, $chartTo]);
+foreach ($expensesStmt->fetchAll() as $row) {
+    $expensesByBucket[$row['bucket']] = (float) $row['total'];
+}
+$purchasesStmt->execute([$chartFrom, $chartTo]);
+foreach ($purchasesStmt->fetchAll() as $row) {
+    $purchasesByBucket[$row['bucket']] = (float) $row['total'];
 }
 
 $chartLabels = [];
-$chartValues = [];
-for ($i = 6; $i >= 0; $i--) {
-    $date = date('Y-m-d', strtotime("-{$i} days"));
-    $chartLabels[] = date('M j', strtotime($date));
-    $chartValues[] = $weekSalesByDate[$date] ?? 0.0;
+$chartSales = [];
+$chartExpenses = [];
+$chartPurchases = [];
+
+if ($chartGrain === 'daily') {
+    $cursor = strtotime($chartFrom);
+    $endTs = strtotime($chartTo);
+    while ($cursor <= $endTs) {
+        $key = date('Y-m-d', $cursor);
+        $chartLabels[] = date('M j', $cursor);
+        $chartSales[] = $salesByBucket[$key] ?? 0.0;
+        $chartExpenses[] = $expensesByBucket[$key] ?? 0.0;
+        $chartPurchases[] = $purchasesByBucket[$key] ?? 0.0;
+        $cursor = strtotime('+1 day', $cursor);
+    }
+} else {
+    $cursor = strtotime(date('Y-m-01', strtotime($chartFrom)));
+    $endTs = strtotime(date('Y-m-01', strtotime($chartTo)));
+    while ($cursor <= $endTs) {
+        $key = date('Y-m', $cursor);
+        $chartLabels[] = date('M Y', $cursor);
+        $chartSales[] = $salesByBucket[$key] ?? 0.0;
+        $chartExpenses[] = $expensesByBucket[$key] ?? 0.0;
+        $chartPurchases[] = $purchasesByBucket[$key] ?? 0.0;
+        $cursor = strtotime('+1 month', $cursor);
+    }
 }
+
+$rangePresets = [
+    'week' => 'Week',
+    'month' => 'Month',
+    'year' => 'Year',
+    'all' => 'All',
+];
 
 $paymentLabels = [
     'cash' => 'Cash',
@@ -189,11 +297,25 @@ require __DIR__ . '/includes/header.php';
 </div>
 
 <div class="bg-white rounded shadow-sm p-3 mb-4">
-  <div class="d-flex justify-content-between align-items-center mb-3">
-    <h2 class="h6 mb-0">Sales — Last 7 Days</h2>
-    <a href="reports.php" class="small">View reports</a>
+  <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+    <div>
+      <h2 class="h6 mb-0">Sales vs Money Out</h2>
+      <p class="small text-muted mb-0"><?= htmlspecialchars($rangeLabel) ?> · Sales, Expenses &amp; Purchases</p>
+    </div>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <div class="btn-group btn-group-sm" role="group" aria-label="Chart range">
+        <?php foreach ($rangePresets as $key => $label): ?>
+          <a href="dashboard.php?range=<?= urlencode($key) ?>"
+             class="btn btn-outline-secondary<?= $range === $key ? ' active' : '' ?>">
+            <?= htmlspecialchars($label) ?>
+          </a>
+        <?php endforeach; ?>
+      </div>
+      <a href="reports.php?from=<?= urlencode($chartFrom) ?>&to=<?= urlencode($chartTo) ?>" class="small">View reports</a>
+      <a href="analytics.php?from=<?= urlencode($chartFrom) ?>&to=<?= urlencode($chartTo) ?>" class="small">Analytics</a>
+    </div>
   </div>
-  <canvas id="weekSalesChart" height="100"></canvas>
+  <canvas id="cashflowChart" height="100"></canvas>
 </div>
 
 <div class="row g-3 mb-4">
@@ -242,7 +364,7 @@ require __DIR__ . '/includes/header.php';
     <div class="bg-white rounded shadow-sm p-3 h-100">
       <div class="d-flex justify-content-between align-items-center mb-3">
         <h2 class="h6 mb-0">Top Other Items — This Month</h2>
-        <a href="reports.php" class="small">View reports</a>
+        <a href="reports.php?from=<?= urlencode($monthStart) ?>&to=<?= urlencode($today) ?>" class="small">View reports</a>
       </div>
       <?php if (count($topOtherMonth) === 0): ?>
         <p class="text-muted mb-0">No other-item sales this month yet.</p>
@@ -429,27 +551,43 @@ require __DIR__ . '/includes/header.php';
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-  const canvas = document.getElementById('weekSalesChart');
+  const canvas = document.getElementById('cashflowChart');
   if (!canvas) return;
 
   const labels = <?= json_encode($chartLabels, JSON_UNESCAPED_UNICODE) ?>;
-  const values = <?= json_encode($chartValues) ?>;
+  const sales = <?= json_encode($chartSales) ?>;
+  const expenses = <?= json_encode($chartExpenses) ?>;
+  const purchases = <?= json_encode($chartPurchases) ?>;
 
   new Chart(canvas, {
     type: 'bar',
     data: {
       labels: labels,
-      datasets: [{
-        label: 'Sales (₱)',
-        data: values,
-        backgroundColor: 'rgba(45, 106, 79, 0.75)',
-        borderRadius: 6
-      }]
+      datasets: [
+        {
+          label: 'Sales',
+          data: sales,
+          backgroundColor: 'rgba(45, 106, 79, 0.75)',
+          borderRadius: 4
+        },
+        {
+          label: 'Expenses',
+          data: expenses,
+          backgroundColor: 'rgba(192, 57, 43, 0.7)',
+          borderRadius: 4
+        },
+        {
+          label: 'Purchases',
+          data: purchases,
+          backgroundColor: 'rgba(108, 117, 125, 0.7)',
+          borderRadius: 4
+        }
+      ]
     },
     options: {
       responsive: true,
       plugins: {
-        legend: { display: false }
+        legend: { display: true, position: 'top' }
       },
       scales: {
         y: {

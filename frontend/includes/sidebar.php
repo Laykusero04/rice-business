@@ -32,7 +32,15 @@ $navItems = [
     ['id' => 'customers', 'label' => 'Customers', 'icon' => 'bi-people', 'href' => 'customers.php'],
     ['id' => 'suppliers', 'label' => 'Suppliers', 'icon' => 'bi-truck', 'href' => 'suppliers.php'],
     ['id' => 'expenses', 'label' => 'Expenses', 'icon' => 'bi-cash-stack', 'href' => 'expenses.php'],
-    ['id' => 'reports', 'label' => 'Reports', 'icon' => 'bi-graph-up', 'href' => 'reports.php'],
+    [
+        'id' => 'reports-group',
+        'label' => 'Reports',
+        'icon' => 'bi-graph-up',
+        'children' => [
+            ['id' => 'reports', 'label' => 'Reports', 'href' => 'reports.php'],
+            ['id' => 'analytics', 'label' => 'Analytics', 'href' => 'analytics.php'],
+        ],
+    ],
     ['id' => 'users', 'label' => 'Users', 'icon' => 'bi-person-gear', 'href' => 'users.php'],
     ['id' => 'settings', 'label' => 'Settings', 'icon' => 'bi-gear', 'href' => 'settings.php'],
 ];
@@ -46,7 +54,7 @@ if (!isAdmin()) {
 <aside class="app-drawer" id="appDrawer">
   <div class="drawer-brand">
     <a href="dashboard.php" class="text-decoration-none">
-      Rice <span>Business</span>
+      Sjeu <span>Store</span>
     </a>
     <button class="btn btn-link text-white d-lg-none p-0 drawer-close" type="button" id="drawerClose" aria-label="Close menu">
       <i class="bi bi-x-lg fs-5"></i>

@@ -1,15 +1,33 @@
 :root {
-  --rice-green: #2d6a4f;
-  --rice-green-dark: #1b4332;
-  --rice-cream: #f8f6f1;
-  --rice-gold: #c9a227;
+  /* Flat theme: blue primary · grey secondary · purple accent */
+  --brand-blue: #2563eb;
+  --brand-blue-dark: #1e3a8a;
+  --brand-blue-mid: #3b82f6;
+  --brand-grey: #6b7280;
+  --brand-grey-light: #e5e7eb;
+  --brand-grey-dark: #374151;
+  --brand-purple: #7c3aed;
+  --brand-surface: #f1f5f9;
+  --brand-card: #ffffff;
+
+  /* Semantic chart / status colors (independent of brand) */
+  --chart-green: #2d6a4f;
+  --chart-red: #c0392b;
+  --chart-grey: #6c757d;
+
+  /* Aliases so existing --rice-* usages keep working */
+  --rice-green: var(--brand-blue);
+  --rice-green-dark: var(--brand-blue-dark);
+  --rice-cream: var(--brand-surface);
+  --rice-gold: var(--brand-purple);
+
+  --drawer-width: 260px;
+  --topbar-height: 56px;
 }
 
 body.login-page {
   min-height: 100vh;
-  background:
-    linear-gradient(160deg, rgba(27, 67, 50, 0.92), rgba(45, 106, 79, 0.85)),
-    url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.06'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+  background: #1e3a8a;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -19,50 +37,46 @@ body.login-page {
 .login-card {
   width: 100%;
   max-width: 420px;
-  background: var(--rice-cream);
-  border: none;
-  border-radius: 1rem;
-  box-shadow: 0 1rem 2.5rem rgba(0, 0, 0, 0.25);
+  background: #fff;
+  border: 1px solid var(--brand-grey-light);
+  border-radius: 0.75rem;
+  box-shadow: 0 0.5rem 1.25rem rgba(55, 65, 81, 0.12);
 }
 
 .login-brand {
-  color: var(--rice-green-dark);
+  color: var(--brand-blue-dark);
   font-weight: 700;
   letter-spacing: 0.02em;
 }
 
 .login-brand span {
-  color: var(--rice-gold);
+  color: var(--brand-blue-dark);
 }
 
 .btn-rice {
-  background: var(--rice-green);
-  border-color: var(--rice-green);
+  background: var(--brand-blue);
+  border-color: var(--brand-blue);
   color: #fff;
 }
 
 .btn-rice:hover,
 .btn-rice:focus {
-  background: var(--rice-green-dark);
-  border-color: var(--rice-green-dark);
+  background: var(--brand-blue-dark);
+  border-color: var(--brand-blue-dark);
   color: #fff;
 }
 
-.form-control:focus {
-  border-color: var(--rice-green);
-  box-shadow: 0 0 0 0.2rem rgba(45, 106, 79, 0.2);
-}
-
-/* App layout + left drawer */
-:root {
-  --drawer-width: 260px;
-  --topbar-height: 56px;
+.form-control:focus,
+.form-select:focus {
+  border-color: var(--brand-blue);
+  box-shadow: 0 0 0 0.2rem rgba(37, 99, 235, 0.22);
 }
 
 .app-body {
   min-height: 100vh;
-  background: #f0f2f0;
+  background: var(--brand-surface);
   font-family: "Segoe UI", system-ui, sans-serif;
+  color: var(--brand-grey-dark);
 }
 
 .app-drawer {
@@ -72,7 +86,7 @@ body.login-page {
   z-index: 1040;
   width: var(--drawer-width);
   height: 100vh;
-  background: linear-gradient(180deg, var(--rice-green-dark), #163528);
+  background: #1e3a8a;
   color: #fff;
   display: flex;
   flex-direction: column;
@@ -87,7 +101,7 @@ body.login-page {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.12);
   flex-shrink: 0;
 }
 
@@ -98,7 +112,7 @@ body.login-page {
 }
 
 .drawer-brand span {
-  color: var(--rice-gold);
+  color: #fff;
 }
 
 .drawer-nav {
@@ -111,12 +125,13 @@ body.login-page {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  color: rgba(255, 255, 255, 0.82);
+  color: rgba(255, 255, 255, 0.85);
   border-radius: 0.5rem;
   padding: 0.65rem 0.85rem;
   margin-bottom: 0.15rem;
   text-decoration: none;
   border: none;
+  border-left: 3px solid transparent;
   background: transparent;
   width: 100%;
   text-align: left;
@@ -124,14 +139,15 @@ body.login-page {
 }
 
 .drawer-nav .nav-link:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.1);
   color: #fff;
 }
 
 .drawer-nav .nav-link.active {
-  background: rgba(201, 162, 39, 0.22);
+  background: rgba(37, 99, 235, 0.45);
   color: #fff;
   font-weight: 600;
+  border-left-color: var(--brand-purple);
 }
 
 .drawer-nav .nav-link i:first-child {
@@ -166,7 +182,7 @@ body.login-page {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(55, 65, 81, 0.5);
   z-index: 1035;
 }
 
@@ -178,14 +194,24 @@ body.login-page {
 
 .app-topbar {
   height: var(--topbar-height);
-  background: var(--rice-green);
-  color: #fff;
+  background: #ffffff;
+  color: var(--brand-grey-dark);
+  border-bottom: 1px solid var(--brand-grey-light);
   display: flex;
   align-items: center;
   padding: 0 1rem;
   position: sticky;
   top: 0;
   z-index: 1020;
+}
+
+.app-topbar .drawer-toggle {
+  color: var(--brand-grey-dark);
+}
+
+.app-topbar .drawer-toggle:hover,
+.app-topbar .drawer-toggle:focus {
+  color: var(--brand-blue);
 }
 
 .app-content {
@@ -195,6 +221,36 @@ body.login-page {
 .drawer-toggle {
   line-height: 1;
   text-decoration: none;
+}
+
+.app-content .bg-white.rounded.shadow-sm {
+  border: 1px solid var(--brand-grey-light);
+  box-shadow: 0 0.125rem 0.35rem rgba(55, 65, 81, 0.06) !important;
+}
+
+a:not(.btn):not(.nav-link):not(.dropdown-item) {
+  color: var(--brand-blue);
+}
+
+a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
+  color: var(--brand-purple);
+}
+
+.btn-outline-secondary {
+  color: var(--brand-grey-dark);
+  border-color: var(--brand-grey-light);
+}
+
+.btn-outline-secondary:hover,
+.btn-outline-secondary.active,
+.btn-group .btn-outline-secondary.active {
+  background-color: var(--brand-blue);
+  border-color: var(--brand-blue);
+  color: #fff;
+}
+
+.text-muted {
+  color: var(--brand-grey) !important;
 }
 
 /* Desktop collapsed drawer */

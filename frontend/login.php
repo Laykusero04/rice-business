@@ -14,14 +14,33 @@ $errorMessage = match ($error) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Login | Rice Business</title>
+  <title>Login | Sjeu Store</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link rel="stylesheet" href="assets/css/style.css">
+  <link rel="stylesheet" href="/rice-business/frontend/assets/css/style.css?v=<?= (string) filemtime(__DIR__ . '/assets/css/style.css') ?>">
+  <style>
+    :root {
+      --brand-blue: #2563eb;
+      --brand-blue-dark: #1e3a8a;
+      --brand-purple: #7c3aed;
+      --rice-green: #2563eb;
+      --rice-gold: #7c3aed;
+    }
+    body.login-page {
+      background: #1e3a8a !important;
+    }
+    .login-brand,
+    .login-brand span { color: #1e3a8a !important; }
+    .btn-rice {
+      background: #2563eb !important;
+      border-color: #2563eb !important;
+      color: #fff !important;
+    }
+  </style>
 </head>
 <body class="login-page">
   <div class="card login-card p-4 p-md-5 mx-3">
     <div class="text-center mb-4">
-      <h1 class="h3 login-brand mb-1">Rice <span>Business</span></h1>
+      <h1 class="h3 login-brand mb-1">Sjeu <span>Store</span></h1>
       <p class="text-muted mb-0">Sign in to continue</p>
     </div>
 

@@ -122,14 +122,14 @@ switch ($type) {
                     p.stock,
                     COALESCE(SUM(si.quantity), 0) AS qty_sold,
                     COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-                    COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+                    COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
              FROM sale_items si
              INNER JOIN sales s ON s.id = si.sale_id
              INNER JOIN products p ON p.id = si.product_id
              WHERE s.sale_date BETWEEN ? AND ?
                AND p.product_type = \'RICE\'
              GROUP BY p.id, p.name, p.category, p.stock
-             ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * p.buying_price), 0)) DESC'
+             ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0)) DESC'
         );
         $stmt->execute([$from, $to]);
         foreach ($stmt->fetchAll() as $row) {
@@ -169,14 +169,23 @@ switch ($type) {
             'Status',
         ]);
         $stmt = $pdo->query(
-            'SELECT name, product_type, category, unit, stock, minimum_stock, buying_price, selling_price, status
-             FROM products
-             ORDER BY (stock * buying_price) DESC, name ASC'
+            'SELECT p.name, p.product_type, p.category, p.unit, p.stock, p.minimum_stock,
+                    p.buying_price, p.selling_price, p.status,
+                    COALESCE(lot_cost.cost_value, p.stock * p.buying_price) AS lot_cost_value
+             FROM products p
+             LEFT JOIN (
+                 SELECT product_id, SUM(quantity_remaining * buying_price) AS cost_value
+                 FROM stock_lots
+                 WHERE quantity_remaining > 0
+                 GROUP BY product_id
+             ) lot_cost ON lot_cost.product_id = p.id
+             ORDER BY lot_cost_value DESC, p.name ASC'
         );
         foreach ($stmt->fetchAll() as $row) {
             $stock = (float) $row['stock'];
-            $costValue = $stock * (float) $row['buying_price'];
+            $costValue = (float) $row['lot_cost_value'];
             $sellValue = $stock * (float) $row['selling_price'];
+            $avgBuy = $stock > 0 ? $costValue / $stock : (float) $row['buying_price'];
             fputcsv($out, [
                 $row['name'],
                 $row['product_type'],
@@ -184,7 +193,7 @@ switch ($type) {
                 $row['unit'],
                 $row['stock'],
                 $row['minimum_stock'],
-                $row['buying_price'],
+                round($avgBuy, 2),
                 $row['selling_price'],
                 round($costValue, 2),
                 round($sellValue, 2),
@@ -198,11 +207,17 @@ switch ($type) {
         fputcsv($out, ['Metric', 'Amount']);
         $totals = $pdo->query(
             'SELECT
-                COALESCE(SUM(CASE WHEN product_type = \'RICE\' THEN stock ELSE 0 END), 0) AS rice_stock_kg,
-                COALESCE(SUM(stock * buying_price), 0) AS cost_value,
-                COALESCE(SUM(stock * selling_price), 0) AS sell_value,
-                COALESCE(SUM(CASE WHEN status = \'active\' THEN 1 ELSE 0 END), 0) AS active_count
-             FROM products'
+                COALESCE(SUM(CASE WHEN p.product_type = \'RICE\' THEN p.stock ELSE 0 END), 0) AS rice_stock_kg,
+                COALESCE(SUM(COALESCE(lot_cost.cost_value, p.stock * p.buying_price)), 0) AS cost_value,
+                COALESCE(SUM(p.stock * p.selling_price), 0) AS sell_value,
+                COALESCE(SUM(CASE WHEN p.status = \'active\' THEN 1 ELSE 0 END), 0) AS active_count
+             FROM products p
+             LEFT JOIN (
+                 SELECT product_id, SUM(quantity_remaining * buying_price) AS cost_value
+                 FROM stock_lots
+                 WHERE quantity_remaining > 0
+                 GROUP BY product_id
+             ) lot_cost ON lot_cost.product_id = p.id'
         )->fetch();
         $costValue = (float) $totals['cost_value'];
         $sellValue = (float) $totals['sell_value'];
@@ -232,23 +247,31 @@ switch ($type) {
             'Status',
         ]);
         $stmt = $pdo->query(
-            'SELECT name, product_type, category, unit, stock, buying_price, selling_price, status
-             FROM products
-             ORDER BY (stock * buying_price) DESC, name ASC'
+            'SELECT p.name, p.product_type, p.category, p.unit, p.stock, p.buying_price, p.selling_price, p.status,
+                    COALESCE(lot_cost.cost_value, p.stock * p.buying_price) AS lot_cost_value
+             FROM products p
+             LEFT JOIN (
+                 SELECT product_id, SUM(quantity_remaining * buying_price) AS cost_value
+                 FROM stock_lots
+                 WHERE quantity_remaining > 0
+                 GROUP BY product_id
+             ) lot_cost ON lot_cost.product_id = p.id
+             ORDER BY lot_cost_value DESC, p.name ASC'
         );
         foreach ($stmt->fetchAll() as $row) {
             $stock = (float) $row['stock'];
-            $rowCost = $stock * (float) $row['buying_price'];
+            $rowCost = (float) $row['lot_cost_value'];
             $rowSell = $stock * (float) $row['selling_price'];
             $rowGp = $rowSell - $rowCost;
             $rowMargin = $rowSell > 0 ? round(($rowGp / $rowSell) * 100, 2) : 0;
+            $avgBuy = $stock > 0 ? $rowCost / $stock : (float) $row['buying_price'];
             fputcsv($out, [
                 $row['name'],
                 $row['product_type'],
                 $row['category'],
                 $row['unit'],
                 $row['stock'],
-                $row['buying_price'],
+                round($avgBuy, 2),
                 $row['selling_price'],
                 round($rowCost, 2),
                 round($rowSell, 2),
@@ -261,12 +284,18 @@ switch ($type) {
         fputcsv($out, []);
         fputcsv($out, ['Category', 'Products', 'Cost Value', 'Selling Value']);
         $catStmt = $pdo->query(
-            "SELECT COALESCE(NULLIF(category, ''), 'Uncategorized') AS category_name,
+            "SELECT COALESCE(NULLIF(p.category, ''), 'Uncategorized') AS category_name,
                     COUNT(*) AS product_count,
-                    COALESCE(SUM(stock * buying_price), 0) AS cost_value,
-                    COALESCE(SUM(stock * selling_price), 0) AS sell_value
-             FROM products
-             GROUP BY COALESCE(NULLIF(category, ''), 'Uncategorized')
+                    COALESCE(SUM(COALESCE(lot_cost.cost_value, p.stock * p.buying_price)), 0) AS cost_value,
+                    COALESCE(SUM(p.stock * p.selling_price), 0) AS sell_value
+             FROM products p
+             LEFT JOIN (
+                 SELECT product_id, SUM(quantity_remaining * buying_price) AS cost_value
+                 FROM stock_lots
+                 WHERE quantity_remaining > 0
+                 GROUP BY product_id
+             ) lot_cost ON lot_cost.product_id = p.id
+             GROUP BY COALESCE(NULLIF(p.category, ''), 'Uncategorized')
              ORDER BY cost_value DESC"
         );
         foreach ($catStmt->fetchAll() as $row) {
@@ -301,6 +330,7 @@ switch ($type) {
                     p.stock,
                     p.minimum_stock,
                     p.buying_price,
+                    COALESCE(lot_cost.cost_value, p.stock * p.buying_price) AS lot_cost_value,
                     COALESCE((
                         SELECT SUM(si.quantity)
                         FROM sale_items si
@@ -309,6 +339,12 @@ switch ($type) {
                           AND s.sale_date BETWEEN ? AND ?
                     ), 0) AS qty_sold
              FROM products p
+             LEFT JOIN (
+                 SELECT product_id, SUM(quantity_remaining * buying_price) AS cost_value
+                 FROM stock_lots
+                 WHERE quantity_remaining > 0
+                 GROUP BY product_id
+             ) lot_cost ON lot_cost.product_id = p.id
              WHERE p.status = 'active'
                AND p.product_type = 'RICE'
              ORDER BY qty_sold DESC, p.name ASC"
@@ -320,7 +356,7 @@ switch ($type) {
             $minStock = (float) $row['minimum_stock'];
             $avgDaily = $qty / $lookbackDays;
             $daysSupply = $avgDaily > 0 ? round($stock / $avgDaily, 1) : '';
-            $tied = round($stock * (float) $row['buying_price'], 2);
+            $tied = round((float) $row['lot_cost_value'], 2);
             $noSales = $qty <= 0 ? 'Yes' : 'No';
             $excessive = 'No';
             if ($stock > 0) {
@@ -445,7 +481,7 @@ switch ($type) {
         $stmt = $pdo->prepare(
             'SELECT s.sale_date,
                     COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-                    COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+                    COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
              FROM sale_items si
              INNER JOIN sales s ON s.id = si.sale_id
              INNER JOIN products p ON p.id = si.product_id
@@ -483,7 +519,7 @@ switch ($type) {
 
         $cogsMap = [];
         $cogsStmt = $pdo->prepare(
-            'SELECT s.sale_date, COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+            'SELECT s.sale_date, COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
              FROM sale_items si
              INNER JOIN sales s ON s.id = si.sale_id
              INNER JOIN products p ON p.id = si.product_id
@@ -667,7 +703,7 @@ switch ($type) {
         $purchaseTotal = (float) $purchaseStmt->fetchColumn();
 
         $cogsStmt = $pdo->prepare(
-            'SELECT COALESCE(SUM(si.quantity * p.buying_price), 0)
+            'SELECT COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0)
              FROM sale_items si
              INNER JOIN sales s ON s.id = si.sale_id
              INNER JOIN products p ON p.id = si.product_id

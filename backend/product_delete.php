@@ -18,10 +18,16 @@ if ($id <= 0) {
 }
 
 try {
+    $pdo->beginTransaction();
+    $pdo->prepare('DELETE FROM stock_lots WHERE product_id = ?')->execute([$id]);
     $stmt = $pdo->prepare('DELETE FROM products WHERE id = ?');
     $stmt->execute([$id]);
+    $pdo->commit();
     header('Location: /rice-business/frontend/products.php?success=deleted');
 } catch (PDOException $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     header('Location: /rice-business/frontend/products.php?error=delete');
 }
 

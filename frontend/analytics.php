@@ -77,7 +77,7 @@ $expenseTotalStmt->execute([$from, $to]);
 $expenseTotal = (float) $expenseTotalStmt->fetchColumn();
 
 $cogsStmt = $pdo->prepare(
-    'SELECT COALESCE(SUM(si.quantity * p.buying_price), 0)
+    'SELECT COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0)
      FROM sale_items si
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id
@@ -93,7 +93,7 @@ if ($period === 'weekly') {
     $gpTrendSql = "SELECT YEARWEEK(s.sale_date, 1) AS period_key,
                           MIN(s.sale_date) AS period_label,
                           COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-                          COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+                          COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
                    FROM sale_items si
                    INNER JOIN sales s ON s.id = si.sale_id
                    INNER JOIN products p ON p.id = si.product_id
@@ -104,7 +104,7 @@ if ($period === 'weekly') {
     $gpTrendSql = "SELECT DATE_FORMAT(s.sale_date, '%Y-%m') AS period_key,
                           DATE_FORMAT(s.sale_date, '%Y-%m') AS period_label,
                           COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-                          COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+                          COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
                    FROM sale_items si
                    INNER JOIN sales s ON s.id = si.sale_id
                    INNER JOIN products p ON p.id = si.product_id
@@ -115,7 +115,7 @@ if ($period === 'weekly') {
     $gpTrendSql = "SELECT s.sale_date AS period_key,
                           s.sale_date AS period_label,
                           COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-                          COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+                          COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
                    FROM sale_items si
                    INNER JOIN sales s ON s.id = si.sale_id
                    INNER JOIN products p ON p.id = si.product_id
@@ -134,7 +134,7 @@ $dailyGpStmt = $pdo->prepare(
      FROM (
          SELECT s.sale_date,
                 COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-                COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+                COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
          FROM sale_items si
          INNER JOIN sales s ON s.id = si.sale_id
          INNER JOIN products p ON p.id = si.product_id
@@ -155,7 +155,7 @@ $previousMonthEnd = date('Y-m-t', strtotime('first day of last month'));
 $monthMetricsSql = 'SELECT
         COALESCE((SELECT SUM(total) FROM sales WHERE sale_date BETWEEN ? AND ?), 0) AS sales_amount,
         COALESCE((
-            SELECT SUM(si.quantity * p.buying_price)
+            SELECT SUM(si.quantity * COALESCE(si.cost_price, p.buying_price))
             FROM sale_items si
             INNER JOIN sales s ON s.id = si.sale_id
             INNER JOIN products p ON p.id = si.product_id
@@ -190,14 +190,14 @@ $profitByVarietyStmt = $pdo->prepare(
             p.stock,
             COALESCE(SUM(si.quantity), 0) AS qty_sold,
             COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-            COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+            COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
      FROM sale_items si
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id
      WHERE s.sale_date BETWEEN ? AND ?
        AND p.product_type = \'RICE\'
      GROUP BY p.id, p.name, p.category, p.stock
-     ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * p.buying_price), 0)) DESC'
+     ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0)) DESC'
 );
 $profitByVarietyStmt->execute([$from, $to]);
 $profitByVariety = $profitByVarietyStmt->fetchAll();
@@ -246,6 +246,7 @@ $movementStmt = $pdo->prepare(
             p.minimum_stock,
             p.buying_price,
             p.status,
+            COALESCE(lot_cost.cost_value, p.stock * p.buying_price) AS lot_cost_value,
             COALESCE((
                 SELECT SUM(si.quantity)
                 FROM sale_items si
@@ -254,6 +255,12 @@ $movementStmt = $pdo->prepare(
                   AND s.sale_date BETWEEN ? AND ?
             ), 0) AS qty_sold
      FROM products p
+     LEFT JOIN (
+         SELECT product_id, SUM(quantity_remaining * buying_price) AS cost_value
+         FROM stock_lots
+         WHERE quantity_remaining > 0
+         GROUP BY product_id
+     ) lot_cost ON lot_cost.product_id = p.id
      WHERE p.status = 'active'
        AND p.product_type = 'RICE'
      ORDER BY qty_sold DESC, p.name ASC"
@@ -276,7 +283,7 @@ foreach ($productMovement as $index => $row) {
     $minStock = (float) $row['minimum_stock'];
     $avgDaily = $qty / $lookbackDays;
     $daysSupply = $avgDaily > 0 ? $stock / $avgDaily : ($stock > 0 ? null : 0.0);
-    $tiedCapital = $stock * (float) $row['buying_price'];
+    $tiedCapital = (float) $row['lot_cost_value'];
 
     $productMovement[$index]['avg_daily'] = $avgDaily;
     $productMovement[$index]['days_supply'] = $daysSupply;
@@ -463,7 +470,7 @@ foreach ($dailySalesStmt->fetchAll() as $row) {
 
 $dailyCogsMap = [];
 $dailyCogsStmt = $pdo->prepare(
-    'SELECT s.sale_date, COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+    'SELECT s.sale_date, COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
      FROM sale_items si
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id

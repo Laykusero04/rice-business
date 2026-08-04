@@ -381,6 +381,7 @@ require __DIR__ . '/includes/header.php';
             <div class="col-md-6">
               <label for="riceSellingPrice" class="form-label">Selling price per kg (₱)</label>
               <input type="number" class="form-control" id="riceSellingPrice" name="selling_price" step="0.01" min="0" required>
+              <div class="form-text" id="riceIdealSellHint">Ideal: enter sack price to see a suggested sell price</div>
             </div>
             <div class="col-md-6">
               <label for="riceMinSacks" class="form-label">Low stock alert (sacks)</label>
@@ -579,6 +580,16 @@ document.addEventListener('DOMContentLoaded', function () {
     const buyPerKg = kgPerSack > 0 ? sackPrice / kgPerSack : 0;
     document.getElementById('riceSackSummary').textContent =
       'Stock: ' + stockKg.toFixed(2) + ' kg · Buy price: ' + formatMoney(buyPerKg) + ' / kg';
+
+    const idealHint = document.getElementById('riceIdealSellHint');
+    if (buyPerKg > 0) {
+      // ~20% over buy cost — matches typical rice margins in this app
+      const idealSell = Math.round(buyPerKg * 1.2 * 100) / 100;
+      idealHint.textContent =
+        'Ideal selling price: ' + formatMoney(idealSell) + ' / kg (~20% over buy)';
+    } else {
+      idealHint.textContent = 'Ideal: enter sack price to see a suggested sell price';
+    }
   }
 
   function updateGroceryUnitUi() {

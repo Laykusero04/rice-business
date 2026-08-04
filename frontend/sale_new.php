@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../backend/auth.php';
 require_once __DIR__ . '/../backend/conn.php';
+require_once __DIR__ . '/../backend/stock_lots.php';
 requireLogin();
 
 $user = currentUser();
@@ -14,6 +15,19 @@ $products = $pdo->query(
      WHERE status = 'active'
      ORDER BY (product_type = 'RICE') DESC, name ASC"
 )->fetchAll();
+
+$lotsByProduct = fetchOpenLotsByProduct($pdo);
+
+$lotsForJs = [];
+foreach ($lotsByProduct as $pid => $lots) {
+    $lotsForJs[(string) $pid] = array_map(static function ($lot) {
+        return [
+            'id' => (int) $lot['id'],
+            'label' => formatLotLabel($lot),
+            'remaining' => (float) $lot['quantity_remaining'],
+        ];
+    }, $lots);
+}
 
 $riceProducts = [];
 $otherProducts = [];
@@ -32,10 +46,11 @@ if (isset($_GET['error'])) {
     $flash = match ($_GET['error']) {
         'required' => 'Sale date is required.',
         'customer' => 'Enter the borrower name for walk-in utang, or select a customer.',
-        'items' => 'Add at least one valid product line.',
+        'items' => 'Add at least one valid product line and choose a stock stack.',
         'stock' => 'Not enough stock for '
             . htmlspecialchars($_GET['product'] ?? 'selected product')
             . '.',
+        'lot' => 'Choose a valid stock stack for each item.',
         'save' => 'Could not save the sale. Please try again.',
         default => 'Something went wrong.',
     };
@@ -49,6 +64,7 @@ require __DIR__ . '/includes/header.php';
     <h1 class="h3 mb-1">New Sale</h1>
     <p class="text-muted mb-0">
       Just buying? Leave customer as walk-in. Use Lend only for utang.
+      Pick which priced stack to sell from when a product has more than one buy price.
     </p>
   </div>
   <a href="sales.php" class="btn btn-outline-secondary">Sales History</a>
@@ -127,7 +143,8 @@ require __DIR__ . '/includes/header.php';
       <table class="table align-middle" id="itemsTable">
         <thead class="table-light">
           <tr>
-            <th style="min-width: 220px;">Rice / Product</th>
+            <th style="min-width: 200px;">Rice / Product</th>
+            <th style="min-width: 220px;">Stack</th>
             <th style="min-width: 110px;">₱/kg</th>
             <th style="min-width: 110px;">Qty</th>
             <th style="min-width: 120px;" class="text-end">Total (₱)</th>
@@ -137,7 +154,7 @@ require __DIR__ . '/includes/header.php';
         <tbody></tbody>
         <tfoot>
           <tr>
-            <td colspan="3" class="text-end fw-semibold">Total</td>
+            <td colspan="4" class="text-end fw-semibold">Total</td>
             <td class="text-end fw-bold" id="grandTotal">₱0.00</td>
             <td></td>
           </tr>
@@ -194,6 +211,12 @@ require __DIR__ . '/includes/header.php';
         </div>
       </td>
       <td>
+        <select class="form-select lot-select" name="stock_lot_id[]" required>
+          <option value="">Select stack</option>
+        </select>
+        <div class="form-text lot-hint">Buy price stack</div>
+      </td>
+      <td>
         <input type="number" class="form-control price-input" name="price[]" step="0.01" min="0" value="0" required>
         <div class="form-text">per kg</div>
       </td>
@@ -232,6 +255,7 @@ require __DIR__ . '/includes/header.php';
     const walkinNameWrap = document.getElementById('walkinNameWrap');
     const walkinName = document.getElementById('walkinName');
     const customerHint = document.getElementById('customerHint');
+    const lotsByProduct = <?= json_encode($lotsForJs, JSON_UNESCAPED_UNICODE) ?>;
 
     function formatMoney(value) {
       return '₱' + Number(value).toLocaleString(undefined, {
@@ -271,6 +295,7 @@ require __DIR__ . '/includes/header.php';
 
     function bindRow(row) {
       const productSelect = row.querySelector('.product-select');
+      const lotSelect = row.querySelector('.lot-select');
       const priceInput = row.querySelector('.price-input');
       const qtyInput = row.querySelector('.qty-input');
       const subtotalInput = row.querySelector('.subtotal-input');
@@ -282,13 +307,6 @@ require __DIR__ . '/includes/header.php';
       function getUnit() {
         const option = productSelect.selectedOptions[0];
         return option && option.dataset.unit ? option.dataset.unit : 'kg';
-      }
-
-      function formatQty(qty) {
-        if (getUnit() === 'pc') {
-          return String(Math.max(1, Math.round(qty)));
-        }
-        return (Math.round(qty * 100) / 100).toFixed(2);
       }
 
       function formatQtyFromAmount(qty) {
@@ -313,7 +331,7 @@ require __DIR__ . '/includes/header.php';
           qtyHint.textContent = unit;
         }
         if (unit === 'pc') {
-          qtyInput.step = entryMode === 'amount' ? '1' : '1';
+          qtyInput.step = '1';
           qtyInput.min = '1';
           if (entryMode === 'qty') {
             qtyInput.value = String(Math.max(1, Math.round(parseFloat(qtyInput.value) || 1)));
@@ -322,6 +340,43 @@ require __DIR__ . '/includes/header.php';
           qtyInput.step = entryMode === 'amount' ? '0.0001' : '0.01';
           qtyInput.min = '0.01';
         }
+      }
+
+      function applyLotMax() {
+        const lotOption = lotSelect.selectedOptions[0];
+        if (lotOption && lotOption.dataset.remaining) {
+          qtyInput.max = lotOption.dataset.remaining;
+        } else {
+          qtyInput.removeAttribute('max');
+        }
+      }
+
+      function populateLots(preferredLotId) {
+        const productId = productSelect.value;
+        const lots = lotsByProduct[productId] || [];
+        const previous = preferredLotId || lotSelect.value;
+        lotSelect.innerHTML = '';
+
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = lots.length ? 'Select stack' : 'No stack available';
+        lotSelect.appendChild(placeholder);
+
+        lots.forEach(function (lot) {
+          const opt = document.createElement('option');
+          opt.value = String(lot.id);
+          opt.textContent = lot.label;
+          opt.dataset.remaining = String(lot.remaining);
+          lotSelect.appendChild(opt);
+        });
+
+        if (previous && [...lotSelect.options].some(function (o) { return o.value === String(previous); })) {
+          lotSelect.value = String(previous);
+        } else if (lots.length === 1) {
+          lotSelect.value = String(lots[0].id);
+        }
+
+        applyLotMax();
       }
 
       function updateTotalDisplay() {
@@ -389,11 +444,13 @@ require __DIR__ . '/includes/header.php';
         if (option && option.dataset.sellingPrice) {
           priceInput.value = option.dataset.sellingPrice;
         }
-        if (option && option.dataset.stock) {
-          qtyInput.max = option.dataset.stock;
-        }
+        populateLots();
         applyUnitRules();
         refreshLine();
+      });
+
+      lotSelect.addEventListener('change', function () {
+        applyLotMax();
       });
 
       qtyInput.addEventListener('input', function () {
@@ -422,6 +479,7 @@ require __DIR__ . '/includes/header.php';
         recalcGrandTotal();
       });
 
+      row._populateLots = populateLots;
       setEntryMode('qty');
     }
 

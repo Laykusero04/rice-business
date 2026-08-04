@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/conn.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/stock_lots.php';
 
 requireLogin();
 
@@ -23,6 +24,7 @@ $saleDate = trim($_POST['sale_date'] ?? '');
 $paymentMethod = trim($_POST['payment_method'] ?? 'cash');
 $notes = trim($_POST['notes'] ?? '');
 $productIds = $_POST['product_id'] ?? [];
+$lotIds = $_POST['stock_lot_id'] ?? [];
 $quantities = $_POST['quantity'] ?? [];
 $prices = $_POST['price'] ?? [];
 $lineSubtotals = $_POST['line_subtotal'] ?? [];
@@ -54,11 +56,12 @@ $total = 0.0;
 
 for ($i = 0; $i < count($productIds); $i++) {
     $productId = (int) ($productIds[$i] ?? 0);
+    $lotId = (int) ($lotIds[$i] ?? 0);
     $quantity = (float) ($quantities[$i] ?? 0);
     $price = (float) ($prices[$i] ?? 0);
     $lineSubtotalRaw = trim((string) ($lineSubtotals[$i] ?? ''));
 
-    if ($productId <= 0 || $quantity <= 0 || $price < 0) {
+    if ($productId <= 0 || $lotId <= 0 || $quantity <= 0 || $price < 0) {
         continue;
     }
 
@@ -69,6 +72,7 @@ for ($i = 0; $i < count($productIds); $i++) {
     }
     $items[] = [
         'product_id' => $productId,
+        'stock_lot_id' => $lotId,
         'quantity' => $quantity,
         'price' => $price,
         'subtotal' => $subtotal,
@@ -105,7 +109,7 @@ try {
         $oldAmountPaid = (float) ($existingSale['amount_paid'] ?? 0);
 
         $oldItemsStmt = $pdo->prepare(
-            'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?'
+            'SELECT product_id, stock_lot_id, quantity FROM sale_items WHERE sale_id = ?'
         );
         $oldItemsStmt->execute([$saleId]);
         $oldItems = $oldItemsStmt->fetchAll();
@@ -118,6 +122,11 @@ try {
                 (float) $oldItem['quantity'],
                 (int) $oldItem['product_id'],
             ]);
+
+            $oldLotId = (int) ($oldItem['stock_lot_id'] ?? 0);
+            if ($oldLotId > 0) {
+                restoreStockLot($pdo, $oldLotId, (float) $oldItem['quantity']);
+            }
         }
 
         $pdo->prepare('DELETE FROM stock_movements WHERE reference = ?')
@@ -225,8 +234,8 @@ try {
     }
 
     $itemStmt = $pdo->prepare(
-        'INSERT INTO sale_items (sale_id, product_id, quantity, price, subtotal)
-         VALUES (?, ?, ?, ?, ?)'
+        'INSERT INTO sale_items (sale_id, product_id, stock_lot_id, quantity, price, cost_price, subtotal)
+         VALUES (?, ?, ?, ?, ?, ?, ?)'
     );
     $stockCheck = $pdo->prepare(
         'SELECT id, name, unit, stock FROM products WHERE id = ? AND status = ? FOR UPDATE'
@@ -259,11 +268,21 @@ try {
             throw new RuntimeException('stock:' . $product['name']);
         }
 
+        $lot = deductStockLot($pdo, (int) $item['stock_lot_id'], (float) $item['quantity']);
+
+        if ((int) $lot['product_id'] !== (int) $item['product_id']) {
+            throw new RuntimeException('lot_mismatch');
+        }
+
+        $costPrice = round((float) $lot['buying_price'], 2);
+
         $itemStmt->execute([
             $saleId,
             $item['product_id'],
+            $item['stock_lot_id'],
             $item['quantity'],
             $item['price'],
+            $costPrice,
             $item['subtotal'],
         ]);
 
@@ -280,6 +299,7 @@ try {
         $movementNote = $isLend
             ? 'Lend (utang) stock out from sale #' . $saleId
             : 'Stock out from sale #' . $saleId;
+        $movementNote .= ' (stack #' . $item['stock_lot_id'] . ')';
 
         $movementStmt->execute([
             $item['product_id'],
@@ -299,8 +319,13 @@ try {
     }
 
     $message = $e->getMessage();
-    if (str_starts_with($message, 'stock:')) {
-        $productName = substr($message, 6);
+    if (str_starts_with($message, 'stock:') || $message === 'lot_stock') {
+        $productName = $message === 'lot_stock'
+            ? ($_GET['product'] ?? 'selected stack')
+            : substr($message, 6);
+        if ($message === 'lot_stock') {
+            $productName = 'selected stack';
+        }
         header(
             'Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=stock&product='
             . urlencode($productName)
@@ -315,6 +340,11 @@ try {
 
     if ($message === 'missing') {
         header('Location: /rice-business/frontend/sales.php?error=notfound');
+        exit;
+    }
+
+    if ($message === 'lot_mismatch' || $message === 'lot_missing') {
+        header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=lot');
         exit;
     }
 

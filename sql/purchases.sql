@@ -34,3 +34,19 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_stock_movements_product FOREIGN KEY (product_id) REFERENCES products(id)
 ) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS stock_lots (
+  id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  product_id INT UNSIGNED NOT NULL,
+  purchase_item_id INT UNSIGNED DEFAULT NULL,
+  buying_price DECIMAL(10, 2) NOT NULL,
+  quantity_original DECIMAL(10, 2) NOT NULL,
+  quantity_remaining DECIMAL(10, 2) NOT NULL,
+  purchased_at DATE NOT NULL,
+  notes VARCHAR(255) DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_stock_lots_product FOREIGN KEY (product_id) REFERENCES products(id),
+  CONSTRAINT fk_stock_lots_purchase_item FOREIGN KEY (purchase_item_id) REFERENCES purchase_items(id) ON DELETE SET NULL,
+  INDEX idx_stock_lots_product_remaining (product_id, quantity_remaining),
+  INDEX idx_stock_lots_purchase_item (purchase_item_id)
+) ENGINE=InnoDB;

@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/conn.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/stock_lots.php';
 
 requireLogin();
 
@@ -29,7 +30,7 @@ try {
     }
 
     $itemsStmt = $pdo->prepare(
-        'SELECT product_id, quantity FROM sale_items WHERE sale_id = ?'
+        'SELECT product_id, stock_lot_id, quantity FROM sale_items WHERE sale_id = ?'
     );
     $itemsStmt->execute([$id]);
     $items = $itemsStmt->fetchAll();
@@ -46,6 +47,11 @@ try {
             (float) $item['quantity'],
             (int) $item['product_id'],
         ]);
+
+        $lotId = (int) ($item['stock_lot_id'] ?? 0);
+        if ($lotId > 0) {
+            restoreStockLot($pdo, $lotId, (float) $item['quantity']);
+        }
     }
 
     $deleteMovements->execute(['SALE-' . $id]);

@@ -19,9 +19,12 @@ CREATE TABLE IF NOT EXISTS sale_items (
   id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   sale_id INT UNSIGNED NOT NULL,
   product_id INT UNSIGNED NOT NULL,
+  stock_lot_id INT UNSIGNED DEFAULT NULL,
   quantity DECIMAL(10, 2) NOT NULL,
   price DECIMAL(10, 2) NOT NULL,
+  cost_price DECIMAL(10, 2) DEFAULT NULL,
   subtotal DECIMAL(12, 2) NOT NULL,
   CONSTRAINT fk_sale_items_sale FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
-  CONSTRAINT fk_sale_items_product FOREIGN KEY (product_id) REFERENCES products(id)
+  CONSTRAINT fk_sale_items_product FOREIGN KEY (product_id) REFERENCES products(id),
+  CONSTRAINT fk_sale_items_stock_lot FOREIGN KEY (stock_lot_id) REFERENCES stock_lots(id)
 ) ENGINE=InnoDB;

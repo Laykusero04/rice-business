@@ -30,9 +30,11 @@ if (!$sale) {
 }
 
 $itemStmt = $pdo->prepare(
-    'SELECT si.*, pr.name AS product_name
+    'SELECT si.*, pr.name AS product_name, pr.product_type, pr.unit, pr.kg_per_sack,
+            sl.buying_price AS lot_buying_price, sl.purchased_at AS lot_purchased_at
      FROM sale_items si
      INNER JOIN products pr ON pr.id = si.product_id
+     LEFT JOIN stock_lots sl ON sl.id = si.stock_lot_id
      WHERE si.sale_id = ?
      ORDER BY si.id ASC'
 );
@@ -198,24 +200,56 @@ require __DIR__ . '/includes/header.php';
     <thead class="table-light">
       <tr>
         <th>Product</th>
-        <th class="text-end">Qty (kg)</th>
-        <th class="text-end">Price</th>
+        <th>Stack</th>
+        <th class="text-end">Qty</th>
+        <th class="text-end">Sell price</th>
+        <th class="text-end">Cost</th>
         <th class="text-end">Subtotal</th>
       </tr>
     </thead>
     <tbody>
       <?php foreach ($items as $item): ?>
+        <?php
+          $unit = $item['unit'] ?? 'kg';
+          $productType = $item['product_type'] ?? 'RICE';
+          $kgPerSack = (float) ($item['kg_per_sack'] ?? 25);
+          if ($kgPerSack <= 0) {
+              $kgPerSack = 25;
+          }
+          $cost = $item['cost_price'] !== null
+              ? (float) $item['cost_price']
+              : (float) ($item['lot_buying_price'] ?? 0);
+          if ($productType === 'RICE' && $cost > 0) {
+              $costLabel = '₱' . number_format($cost * $kgPerSack, 2) . '/sack';
+          } elseif ($cost > 0) {
+              $costLabel = '₱' . number_format($cost, 2) . '/' . $unit;
+          } else {
+              $costLabel = '—';
+          }
+          $stackLabel = '—';
+          if (!empty($item['stock_lot_id'])) {
+              $stackLabel = '#' . (int) $item['stock_lot_id'];
+              if (!empty($item['lot_purchased_at'])) {
+                  $stackLabel .= ' · ' . htmlspecialchars($item['lot_purchased_at']);
+              }
+          }
+        ?>
         <tr>
           <td class="fw-semibold"><?= htmlspecialchars($item['product_name']) ?></td>
-          <td class="text-end"><?= number_format((float) $item['quantity'], 2) ?></td>
+          <td class="small"><?= $stackLabel ?><div class="text-muted"><?= htmlspecialchars($costLabel) ?></div></td>
+          <td class="text-end">
+            <?= number_format((float) $item['quantity'], $unit === 'pc' ? 0 : 2) ?>
+            <?= htmlspecialchars($unit) ?>
+          </td>
           <td class="text-end">₱<?= number_format((float) $item['price'], 2) ?></td>
+          <td class="text-end"><?= htmlspecialchars($costLabel) ?></td>
           <td class="text-end">₱<?= number_format((float) $item['subtotal'], 2) ?></td>
         </tr>
       <?php endforeach; ?>
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="3" class="text-end fw-semibold">Total</td>
+        <td colspan="5" class="text-end fw-semibold">Total</td>
         <td class="text-end fw-bold">₱<?= number_format($total, 2) ?></td>
       </tr>
     </tfoot>

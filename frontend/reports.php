@@ -90,7 +90,7 @@ $purchaseTotalStmt->execute([$from, $to]);
 $purchaseTotal = (float) $purchaseTotalStmt->fetchColumn();
 
 $cogsStmt = $pdo->prepare(
-    'SELECT COALESCE(SUM(si.quantity * p.buying_price), 0)
+    'SELECT COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0)
      FROM sale_items si
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id
@@ -149,14 +149,14 @@ $profitByVarietyStmt = $pdo->prepare(
             p.stock,
             COALESCE(SUM(si.quantity), 0) AS qty_sold,
             COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-            COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+            COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
      FROM sale_items si
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id
      WHERE s.sale_date BETWEEN ? AND ?
        AND p.product_type = \'RICE\'
      GROUP BY p.id, p.name, p.category, p.stock
-     ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * p.buying_price), 0)) DESC'
+     ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0)) DESC'
 );
 $profitByVarietyStmt->execute([$from, $to]);
 $profitByVariety = $profitByVarietyStmt->fetchAll();
@@ -182,14 +182,14 @@ $profitByGroceryStmt = $pdo->prepare(
             p.stock,
             COALESCE(SUM(si.quantity), 0) AS qty_sold,
             COALESCE(SUM(si.subtotal), 0) AS sales_amount,
-            COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+            COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
      FROM sale_items si
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id
      WHERE s.sale_date BETWEEN ? AND ?
        AND p.product_type = \'GROCERY\'
      GROUP BY p.id, p.name, p.category, p.unit, p.stock
-     ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * p.buying_price), 0)) DESC'
+     ORDER BY (COALESCE(SUM(si.subtotal), 0) - COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0)) DESC'
 );
 $profitByGroceryStmt->execute([$from, $to]);
 $profitByGrocery = $profitByGroceryStmt->fetchAll();
@@ -227,9 +227,17 @@ $expensesByCategoryStmt->execute([$from, $to]);
 $expensesByCategory = $expensesByCategoryStmt->fetchAll();
 
 $inventory = $pdo->query(
-    'SELECT id, name, product_type, category, unit, stock, minimum_stock, buying_price, selling_price, status
-     FROM products
-     ORDER BY (stock * buying_price) DESC, name ASC'
+    'SELECT p.id, p.name, p.product_type, p.category, p.unit, p.stock, p.minimum_stock,
+            p.buying_price, p.selling_price, p.status,
+            COALESCE(lot_cost.cost_value, p.stock * p.buying_price) AS lot_cost_value
+     FROM products p
+     LEFT JOIN (
+         SELECT product_id, SUM(quantity_remaining * buying_price) AS cost_value
+         FROM stock_lots
+         WHERE quantity_remaining > 0
+         GROUP BY product_id
+     ) lot_cost ON lot_cost.product_id = p.id
+     ORDER BY lot_cost_value DESC, p.name ASC'
 )->fetchAll();
 
 $lowStockCount = 0;
@@ -244,11 +252,13 @@ foreach ($inventory as $index => $item) {
     $stock = (float) $item['stock'];
     $buy = (float) $item['buying_price'];
     $sell = (float) $item['selling_price'];
-    $costValue = $stock * $buy;
+    $costValue = (float) $item['lot_cost_value'];
     $sellValue = $stock * $sell;
     $potentialProfit = $sellValue - $costValue;
     $margin = $sellValue > 0 ? ($potentialProfit / $sellValue) * 100 : 0.0;
+    $avgBuy = $stock > 0 ? $costValue / $stock : $buy;
 
+    $inventory[$index]['buying_price'] = $avgBuy;
     $inventory[$index]['cost_value'] = $costValue;
     $inventory[$index]['sell_value'] = $sellValue;
     $inventory[$index]['potential_profit'] = $potentialProfit;
@@ -307,7 +317,7 @@ foreach ($dailySalesStmt->fetchAll() as $row) {
 
 $dailyCogsMap = [];
 $dailyCogsStmt = $pdo->prepare(
-    'SELECT s.sale_date, COALESCE(SUM(si.quantity * p.buying_price), 0) AS cogs
+    'SELECT s.sale_date, COALESCE(SUM(si.quantity * COALESCE(si.cost_price, p.buying_price)), 0) AS cogs
      FROM sale_items si
      INNER JOIN sales s ON s.id = si.sale_id
      INNER JOIN products p ON p.id = si.product_id

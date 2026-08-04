@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/conn.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/stock_lots.php';
 
 requireLogin();
 
@@ -62,7 +63,7 @@ try {
         }
 
         $oldItemsStmt = $pdo->prepare(
-            'SELECT pi.product_id, pi.quantity, pr.name
+            'SELECT pi.id, pi.product_id, pi.quantity, pr.name
              FROM purchase_items pi
              INNER JOIN products pr ON pr.id = pi.product_id
              WHERE pi.purchase_id = ?'
@@ -70,6 +71,9 @@ try {
         $oldItemsStmt->execute([$purchaseId]);
         $oldItems = $oldItemsStmt->fetchAll();
         $originalProductIds = array_map(static fn ($item) => (int) $item['product_id'], $oldItems);
+
+        // Only allow edit if stacks from this purchase were not sold yet
+        reversePurchaseLots($pdo, $oldItems);
 
         $reverseStock = $pdo->prepare(
             'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
@@ -259,6 +263,17 @@ try {
             $item['buying_price'],
             $item['subtotal'],
         ]);
+        $purchaseItemId = (int) $pdo->lastInsertId();
+
+        createStockLot(
+            $pdo,
+            (int) $item['product_id'],
+            (float) $item['quantity'],
+            (float) $item['buying_price'],
+            $purchaseDate,
+            $purchaseItemId,
+            'Purchase #' . $purchaseId
+        );
 
         $stockStmt->execute([
             $item['quantity'],
@@ -295,6 +310,11 @@ try {
 
     if ($message === 'missing') {
         header('Location: /rice-business/frontend/purchases.php?error=notfound');
+        exit;
+    }
+
+    if ($message === 'lot_used') {
+        header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=lot_used');
         exit;
     }
 

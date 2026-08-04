@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/conn.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/stock_lots.php';
 
 requireLogin();
 
@@ -99,6 +100,8 @@ if ($productType === 'RICE') {
 }
 
 try {
+    $pdo->beginTransaction();
+
     if ($id > 0) {
         $stmt = $pdo->prepare(
             'UPDATE products
@@ -119,6 +122,8 @@ try {
             $status,
             $id,
         ]);
+        syncProductLotsToStock($pdo, $id, $stock, $buyingPrice);
+        $pdo->commit();
         header('Location: ' . $listUrl . '&success=updated');
     } else {
         $stmt = $pdo->prepare(
@@ -138,9 +143,25 @@ try {
             $minimumStock,
             $status,
         ]);
+        $newId = (int) $pdo->lastInsertId();
+        if ($stock > 0) {
+            createStockLot(
+                $pdo,
+                $newId,
+                $stock,
+                $buyingPrice,
+                date('Y-m-d'),
+                null,
+                'Opening stock'
+            );
+        }
+        $pdo->commit();
         header('Location: ' . $listUrl . '&success=created');
     }
-} catch (PDOException $e) {
+} catch (Throwable $e) {
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
     header('Location: ' . $listUrl . '&error=save');
 }
 

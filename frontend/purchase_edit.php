@@ -92,6 +92,7 @@ if (isset($_GET['error'])) {
         'stock' => 'Cannot update — not enough stock left for '
             . htmlspecialchars($_GET['product'] ?? 'a product')
             . '. Some of this purchase may already be sold.',
+        'lot_used' => 'Cannot edit this purchase — some of its stock stack has already been sold. Delete or adjust sales first.',
         'save' => 'Could not update the purchase. Please try again.',
         default => 'Something went wrong.',
     };

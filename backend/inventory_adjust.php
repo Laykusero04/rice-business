@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/conn.php';
 require_once __DIR__ . '/auth.php';
+require_once __DIR__ . '/stock_lots.php';
 
 requireLogin();
 
@@ -11,6 +12,7 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
 }
 
 $productId = (int) ($_POST['product_id'] ?? 0);
+$lotId = (int) ($_POST['stock_lot_id'] ?? 0);
 $quantity = (float) ($_POST['quantity'] ?? 0);
 $notes = trim($_POST['notes'] ?? '');
 
@@ -24,7 +26,7 @@ $notes = $notes !== '' ? $notes : 'Manual stock adjustment';
 try {
     $pdo->beginTransaction();
 
-    $stmt = $pdo->prepare('SELECT id, unit, stock FROM products WHERE id = ? FOR UPDATE');
+    $stmt = $pdo->prepare('SELECT id, unit, stock, buying_price FROM products WHERE id = ? FOR UPDATE');
     $stmt->execute([$productId]);
     $product = $stmt->fetch();
 
@@ -45,6 +47,45 @@ try {
         throw new RuntimeException('stock');
     }
 
+    $absQty = abs($quantity);
+
+    if ($quantity < 0) {
+        // Decrease: must pick a stack with enough remaining
+        if ($lotId <= 0) {
+            throw new RuntimeException('lot');
+        }
+        $lot = deductStockLot($pdo, $lotId, $absQty);
+        if ((int) $lot['product_id'] !== $productId) {
+            throw new RuntimeException('lot');
+        }
+    } else {
+        // Increase: top up selected lot, or create a new adjustment stack
+        if ($lotId > 0) {
+            $lotStmt = $pdo->prepare('SELECT * FROM stock_lots WHERE id = ? FOR UPDATE');
+            $lotStmt->execute([$lotId]);
+            $lot = $lotStmt->fetch();
+            if (!$lot || (int) $lot['product_id'] !== $productId) {
+                throw new RuntimeException('lot');
+            }
+            $pdo->prepare(
+                'UPDATE stock_lots
+                 SET quantity_remaining = quantity_remaining + ?,
+                     quantity_original = quantity_original + ?
+                 WHERE id = ?'
+            )->execute([$absQty, $absQty, $lotId]);
+        } else {
+            createStockLot(
+                $pdo,
+                $productId,
+                $absQty,
+                (float) $product['buying_price'],
+                date('Y-m-d'),
+                null,
+                'Inventory adjustment'
+            );
+        }
+    }
+
     $update = $pdo->prepare('UPDATE products SET stock = ? WHERE id = ?');
     $update->execute([$newStock, $productId]);
 
@@ -53,14 +94,15 @@ try {
          VALUES (?, ?, ?, ?, ?)'
     );
     $qtyFormatted = $unit === 'pc'
-        ? (string) ((int) round(abs($quantity)))
-        : number_format(abs($quantity), 2);
+        ? (string) ((int) round($absQty))
+        : number_format($absQty, 2);
+    $lotNote = $lotId > 0 ? ' (stack #' . $lotId . ')' : '';
     $movement->execute([
         $productId,
         'ADJUSTMENT',
-        abs($quantity),
+        $absQty,
         'ADJUST-' . date('YmdHis'),
-        $notes . ' (' . ($quantity > 0 ? '+' : '-') . $qtyFormatted . ' ' . $unit . ')',
+        $notes . ' (' . ($quantity > 0 ? '+' : '-') . $qtyFormatted . ' ' . $unit . ')' . $lotNote,
     ]);
 
     $pdo->commit();
@@ -71,8 +113,9 @@ try {
     }
 
     $code = match ($e->getMessage()) {
-        'stock' => 'stock',
+        'stock', 'lot_stock' => 'stock',
         'invalid' => 'invalid',
+        'lot', 'lot_missing', 'lot_mismatch' => 'lot',
         default => 'save',
     };
     header('Location: /rice-business/frontend/inventory.php?error=' . $code);

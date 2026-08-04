@@ -48,7 +48,10 @@ require __DIR__ . '/includes/header.php';
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
     <h1 class="h3 mb-1">New Purchase</h1>
-    <p class="text-muted mb-0">Rice is bought by sack (stock added in kg). Other items are bought directly by unit (pc/L/ml).</p>
+    <p class="text-muted mb-0">
+      Rice is bought by sack (stock added in kg). Other items are bought directly by unit (pc/L/ml).
+      Each purchase creates a new priced stack so different buy prices stay separate.
+    </p>
   </div>
   <a href="purchases.php" class="btn btn-outline-secondary">Purchase History</a>
 </div>

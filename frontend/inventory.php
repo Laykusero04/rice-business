@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/../backend/auth.php';
 require_once __DIR__ . '/../backend/conn.php';
+require_once __DIR__ . '/../backend/stock_lots.php';
 requireLogin();
 
 $user = currentUser();
@@ -11,10 +12,30 @@ $typeFilter = trim($_GET['type'] ?? '');
 $search = trim($_GET['q'] ?? '');
 
 $products = $pdo->query(
-    "SELECT id, name, category, unit, stock, minimum_stock, status
+    "SELECT id, name, category, unit, product_type, kg_per_sack, stock, minimum_stock, status, buying_price
      FROM products
      ORDER BY name ASC"
 )->fetchAll();
+
+$lotsByProduct = fetchOpenLotsByProduct($pdo);
+
+$openLots = [];
+foreach ($lotsByProduct as $lots) {
+    foreach ($lots as $lot) {
+        $openLots[] = $lot;
+    }
+}
+
+$lotsForJs = [];
+foreach ($lotsByProduct as $pid => $lots) {
+    $lotsForJs[(string) $pid] = array_map(static function ($lot) {
+        return [
+            'id' => (int) $lot['id'],
+            'label' => formatLotLabel($lot),
+            'remaining' => (float) $lot['quantity_remaining'],
+        ];
+    }, $lots);
+}
 
 $movementSql = 'SELECT sm.*, p.name AS product_name, p.unit AS product_unit
                 FROM stock_movements sm
@@ -52,7 +73,8 @@ if (isset($_GET['error'])) {
     $flashType = 'danger';
     $flash = match ($_GET['error']) {
         'invalid' => 'Please select a product and enter a non-zero quantity.',
-        'stock' => 'Adjustment would make stock negative.',
+        'stock' => 'Adjustment would make stock negative, or the selected stack does not have enough.',
+        'lot' => 'Select a stock stack when deducting. For adding, pick a stack to top up or leave blank to create a new stack.',
         'save' => 'Could not adjust stock.',
         default => 'Something went wrong.',
     };
@@ -64,7 +86,7 @@ require __DIR__ . '/includes/header.php';
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
     <h1 class="h3 mb-1">Inventory</h1>
-    <p class="text-muted mb-0">Current stock levels and movement history.</p>
+    <p class="text-muted mb-0">Current stock, priced stacks, and movement history.</p>
   </div>
   <button type="button" class="btn btn-rice" data-bs-toggle="modal" data-bs-target="#adjustModal">
     <i class="bi bi-sliders"></i> Adjust Stock
@@ -79,8 +101,8 @@ require __DIR__ . '/includes/header.php';
 <?php endif; ?>
 
 <div class="row g-3 mb-4">
-  <div class="col-12">
-    <div class="bg-white rounded shadow-sm p-3">
+  <div class="col-lg-6">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
       <h2 class="h6 mb-3">Current Stock</h2>
       <div class="table-responsive">
         <table class="table table-sm table-hover align-middle mb-0">
@@ -123,6 +145,57 @@ require __DIR__ . '/includes/header.php';
                       <span class="badge text-bg-secondary">Inactive</span>
                     <?php endif; ?>
                   </td>
+                </tr>
+              <?php endforeach; ?>
+            <?php endif; ?>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col-lg-6">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <h2 class="h6 mb-3">Open Stacks (by buy price)</h2>
+      <div class="table-responsive">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Product</th>
+              <th>Buy price</th>
+              <th class="text-end">Remaining</th>
+              <th>Date</th>
+            </tr>
+          </thead>
+          <tbody>
+            <?php if (count($openLots) === 0): ?>
+              <tr>
+                <td colspan="4" class="text-center text-muted">No open stacks. Buy stock via Purchases.</td>
+              </tr>
+            <?php else: ?>
+              <?php foreach ($openLots as $lot): ?>
+                <?php
+                  $unit = $lot['unit'] ?? 'kg';
+                  $productType = $lot['product_type'] ?? 'RICE';
+                  $kgPerSack = (float) ($lot['kg_per_sack'] ?? 25);
+                  if ($kgPerSack <= 0) {
+                      $kgPerSack = 25;
+                  }
+                  $buy = (float) $lot['buying_price'];
+                  if ($productType === 'RICE') {
+                      $priceLabel = '₱' . number_format($buy * $kgPerSack, 2) . '/sack';
+                  } else {
+                      $priceLabel = '₱' . number_format($buy, 2) . '/' . $unit;
+                  }
+                ?>
+                <tr>
+                  <td class="fw-semibold"><?= htmlspecialchars($lot['product_name']) ?></td>
+                  <td><?= htmlspecialchars($priceLabel) ?></td>
+                  <td class="text-end">
+                    <?= number_format((float) $lot['quantity_remaining'], $unit === 'pc' ? 0 : 2) ?>
+                    <?= htmlspecialchars($unit) ?>
+                  </td>
+                  <td class="small text-muted"><?= htmlspecialchars($lot['purchased_at']) ?></td>
                 </tr>
               <?php endforeach; ?>
             <?php endif; ?>
@@ -230,6 +303,15 @@ require __DIR__ . '/includes/header.php';
             </select>
           </div>
           <div class="mb-3">
+            <label for="adjustLot" class="form-label">Stack</label>
+            <select class="form-select" id="adjustLot" name="stock_lot_id">
+              <option value="">Select stack</option>
+            </select>
+            <div class="form-text" id="adjustLotHelp">
+              Required when deducting. When adding, pick a stack to top up, or leave blank to create a new stack at the current buy price.
+            </div>
+          </div>
+          <div class="mb-3">
             <label for="adjustQty" class="form-label" id="adjustQtyLabel">Quantity</label>
             <input
               type="number"
@@ -259,9 +341,29 @@ require __DIR__ . '/includes/header.php';
 <script>
 document.addEventListener('DOMContentLoaded', function () {
   const productSelect = document.getElementById('adjustProduct');
+  const lotSelect = document.getElementById('adjustLot');
   const qtyInput = document.getElementById('adjustQty');
   const qtyLabel = document.getElementById('adjustQtyLabel');
   const qtyHelp = document.getElementById('adjustQtyHelp');
+  const lotsByProduct = <?= json_encode($lotsForJs, JSON_UNESCAPED_UNICODE) ?>;
+
+  function populateLots() {
+    const productId = productSelect.value;
+    const lots = lotsByProduct[productId] || [];
+    lotSelect.innerHTML = '';
+
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = lots.length ? 'Select stack (or blank if adding new)' : 'No open stack — leave blank to create';
+    lotSelect.appendChild(blank);
+
+    lots.forEach(function (lot) {
+      const opt = document.createElement('option');
+      opt.value = String(lot.id);
+      opt.textContent = lot.label;
+      lotSelect.appendChild(opt);
+    });
+  }
 
   function updateAdjustUi() {
     const option = productSelect.selectedOptions[0];
@@ -274,6 +376,7 @@ document.addEventListener('DOMContentLoaded', function () {
       qtyInput.step = '0.01';
       qtyHelp.textContent = 'Example: 10 adds stock, -5 deducts stock.';
     }
+    populateLots();
   }
 
   productSelect.addEventListener('change', updateAdjustUi);

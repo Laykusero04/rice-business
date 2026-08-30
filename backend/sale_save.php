@@ -57,8 +57,8 @@ $total = 0.0;
 for ($i = 0; $i < count($productIds); $i++) {
     $productId = (int) ($productIds[$i] ?? 0);
     $lotId = (int) ($lotIds[$i] ?? 0);
-    $quantity = (float) ($quantities[$i] ?? 0);
-    $price = (float) ($prices[$i] ?? 0);
+    $quantity = round((float) ($quantities[$i] ?? 0), 2);
+    $price = round((float) ($prices[$i] ?? 0), 2);
     $lineSubtotalRaw = trim((string) ($lineSubtotals[$i] ?? ''));
 
     if ($productId <= 0 || $lotId <= 0 || $quantity <= 0 || $price < 0) {
@@ -264,7 +264,7 @@ try {
             }
         }
 
-        if ((float) $product['stock'] < $item['quantity']) {
+        if ((float) $product['stock'] + LOT_NONE_THRESHOLD + 0.0001 < $item['quantity']) {
             throw new RuntimeException('stock:' . $product['name']);
         }
 
@@ -272,6 +272,16 @@ try {
 
         if ((int) $lot['product_id'] !== (int) $item['product_id']) {
             throw new RuntimeException('lot_mismatch');
+        }
+
+        // Use actual deducted qty when tiny overshoot was clamped to batch remaining
+        $requestedQty = round((float) $item['quantity'], 2);
+        $deductedQty = isset($lot['_deducted'])
+            ? round((float) $lot['_deducted'], 2)
+            : $requestedQty;
+        $item['quantity'] = $deductedQty;
+        if (abs($deductedQty - $requestedQty) > 0.001) {
+            $item['subtotal'] = round($deductedQty * (float) $item['price'], 2);
         }
 
         $costPrice = round((float) $lot['buying_price'], 2);
@@ -299,7 +309,7 @@ try {
         $movementNote = $isLend
             ? 'Lend (utang) stock out from sale #' . $saleId
             : 'Stock out from sale #' . $saleId;
-        $movementNote .= ' (stack #' . $item['stock_lot_id'] . ')';
+        $movementNote .= ' (batch #' . $item['stock_lot_id'] . ')';
 
         $movementStmt->execute([
             $item['product_id'],
@@ -309,6 +319,30 @@ try {
             $movementNote,
         ]);
     }
+
+    // Recalculate sale total from saved lines when qty was clamped
+    $recalc = $pdo->prepare('SELECT COALESCE(SUM(subtotal), 0) FROM sale_items WHERE sale_id = ?');
+    $recalc->execute([$saleId]);
+    $finalTotal = round((float) $recalc->fetchColumn(), 2);
+
+    if ($isLend) {
+        $finalPaid = min($oldAmountPaid, $finalTotal);
+        if ($finalPaid <= 0) {
+            $finalStatus = 'unpaid';
+        } elseif ($finalPaid + 0.001 >= $finalTotal) {
+            $finalPaid = $finalTotal;
+            $finalStatus = 'paid';
+        } else {
+            $finalStatus = 'partial';
+        }
+    } else {
+        $finalPaid = $finalTotal;
+        $finalStatus = 'paid';
+    }
+
+    $pdo->prepare(
+        'UPDATE sales SET total = ?, amount_paid = ?, payment_status = ? WHERE id = ?'
+    )->execute([$finalTotal, $finalPaid, $finalStatus, $saleId]);
 
     $pdo->commit();
     $success = $isEdit ? 'updated' : 'created';
@@ -321,10 +355,10 @@ try {
     $message = $e->getMessage();
     if (str_starts_with($message, 'stock:') || $message === 'lot_stock') {
         $productName = $message === 'lot_stock'
-            ? ($_GET['product'] ?? 'selected stack')
+            ? ($_GET['product'] ?? 'selected batch')
             : substr($message, 6);
         if ($message === 'lot_stock') {
-            $productName = 'selected stack';
+            $productName = 'selected batch';
         }
         header(
             'Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=stock&product='

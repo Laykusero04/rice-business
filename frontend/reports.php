@@ -100,7 +100,24 @@ $cogsStmt->execute([$from, $to]);
 $cogsTotal = (float) $cogsStmt->fetchColumn();
 $grossProfit = $salesTotal - $cogsTotal;
 $grossMargin = $salesTotal > 0 ? ($grossProfit / $salesTotal) * 100 : 0.0;
-$netIncome = $salesTotal - $cogsTotal - $expenseTotal;
+
+$gcashFeeIncome = 0.0;
+$gcashCashinCount = 0;
+try {
+    $gcashFeeStmt = $pdo->prepare(
+        'SELECT COALESCE(SUM(fee_charged), 0), COUNT(*)
+         FROM gcash_cashins
+         WHERE cashin_date BETWEEN ? AND ?'
+    );
+    $gcashFeeStmt->execute([$from, $to]);
+    $gcashRow = $gcashFeeStmt->fetch(PDO::FETCH_NUM);
+    $gcashFeeIncome = (float) ($gcashRow[0] ?? 0);
+    $gcashCashinCount = (int) ($gcashRow[1] ?? 0);
+} catch (PDOException $e) {
+    // Table may not exist until migration is run
+}
+
+$netIncome = $salesTotal + $gcashFeeIncome - $cogsTotal - $expenseTotal;
 
 $saleCountStmt = $pdo->prepare(
     'SELECT COUNT(*) FROM sales WHERE sale_date BETWEEN ? AND ?'
@@ -341,10 +358,27 @@ foreach ($dailyExpenseStmt->fetchAll() as $row) {
     $dailyExpenseMap[$row['expense_date']] = (float) $row['total'];
 }
 
+$dailyGcashFeeMap = [];
+try {
+    $dailyGcashStmt = $pdo->prepare(
+        'SELECT cashin_date, COALESCE(SUM(fee_charged), 0) AS total
+         FROM gcash_cashins
+         WHERE cashin_date BETWEEN ? AND ?
+         GROUP BY cashin_date'
+    );
+    $dailyGcashStmt->execute([$from, $to]);
+    foreach ($dailyGcashStmt->fetchAll() as $row) {
+        $dailyGcashFeeMap[$row['cashin_date']] = (float) $row['total'];
+    }
+} catch (PDOException $e) {
+    // ignore if table missing
+}
+
 $allIncomeDates = array_unique(array_merge(
     array_keys($dailySalesMap),
     array_keys($dailyCogsMap),
-    array_keys($dailyExpenseMap)
+    array_keys($dailyExpenseMap),
+    array_keys($dailyGcashFeeMap)
 ));
 sort($allIncomeDates);
 
@@ -353,13 +387,15 @@ foreach ($allIncomeDates as $date) {
     $daySales = $dailySalesMap[$date] ?? 0.0;
     $dayCogs = $dailyCogsMap[$date] ?? 0.0;
     $dayExpenses = $dailyExpenseMap[$date] ?? 0.0;
+    $dayGcashFees = $dailyGcashFeeMap[$date] ?? 0.0;
     $dayGross = $daySales - $dayCogs;
-    $dayNet = $dayGross - $dayExpenses;
+    $dayNet = $dayGross + $dayGcashFees - $dayExpenses;
     $dailyNetIncome[] = [
         'date' => $date,
         'sales' => $daySales,
         'cogs' => $dayCogs,
         'expenses' => $dayExpenses,
+        'gcash_fees' => $dayGcashFees,
         'gross_profit' => $dayGross,
         'net_income' => $dayNet,
     ];
@@ -513,11 +549,18 @@ require __DIR__ . '/includes/header.php';
   </div>
   <div class="col-md-3">
     <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">GCash fee income</div>
+      <div class="fs-5 fw-bold text-success">₱<?= number_format($gcashFeeIncome, 2) ?></div>
+      <div class="small text-muted"><?= $gcashCashinCount ?> cash-in/out(s)</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
       <div class="text-muted small">Net Income</div>
       <div class="fs-5 fw-bold <?= $netIncome >= 0 ? 'text-success' : 'text-danger' ?>">
         ₱<?= number_format($netIncome, 2) ?>
       </div>
-      <div class="small text-muted">Sales − COGS − Expenses</div>
+      <div class="small text-muted">Sales + GCash fees − COGS − Expenses</div>
     </div>
   </div>
   <div class="col-md-3">
@@ -538,7 +581,7 @@ require __DIR__ . '/includes/header.php';
     <div class="bg-white rounded shadow-sm p-3">
       <h2 class="h6 mb-1">Daily Net Income</h2>
       <p class="small text-muted mb-3">
-        Money earned after product costs and operating expenses (Sales − COGS − Expenses)
+        Sales − COGS + GCash fees − Expenses
       </p>
       <div class="row g-3 mb-3">
         <div class="col-md-6">
@@ -586,6 +629,7 @@ require __DIR__ . '/includes/header.php';
                 <th class="text-end">Sales</th>
                 <th class="text-end">COGS</th>
                 <th class="text-end">Gross Profit</th>
+                <th class="text-end">GCash fees</th>
                 <th class="text-end">Expenses</th>
                 <th class="text-end">Net Income</th>
               </tr>
@@ -599,6 +643,7 @@ require __DIR__ . '/includes/header.php';
                   <td class="text-end <?= $row['gross_profit'] >= 0 ? 'text-success' : 'text-danger' ?>">
                     ₱<?= number_format((float) $row['gross_profit'], 2) ?>
                   </td>
+                  <td class="text-end text-success">₱<?= number_format((float) ($row['gcash_fees'] ?? 0), 2) ?></td>
                   <td class="text-end text-danger">₱<?= number_format((float) $row['expenses'], 2) ?></td>
                   <td class="text-end fw-semibold <?= $row['net_income'] >= 0 ? 'text-success' : 'text-danger' ?>">
                     ₱<?= number_format((float) $row['net_income'], 2) ?>
@@ -611,9 +656,8 @@ require __DIR__ . '/includes/header.php';
                 <td>Total</td>
                 <td class="text-end">₱<?= number_format($salesTotal, 2) ?></td>
                 <td class="text-end">₱<?= number_format($cogsTotal, 2) ?></td>
-                <td class="text-end <?= $grossProfit >= 0 ? 'text-success' : 'text-danger' ?>">
-                  ₱<?= number_format($grossProfit, 2) ?>
-                </td>
+                <td class="text-end">₱<?= number_format($grossProfit, 2) ?></td>
+                <td class="text-end text-success">₱<?= number_format($gcashFeeIncome, 2) ?></td>
                 <td class="text-end text-danger">₱<?= number_format($expenseTotal, 2) ?></td>
                 <td class="text-end <?= $netIncome >= 0 ? 'text-success' : 'text-danger' ?>">
                   ₱<?= number_format($netIncome, 2) ?>

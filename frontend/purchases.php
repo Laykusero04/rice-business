@@ -44,6 +44,20 @@ $paymentSourceLabels = [
     'personal' => 'Personal',
 ];
 
+$flash = '';
+$flashType = 'success';
+if (isset($_GET['success']) && $_GET['success'] === 'deleted') {
+    $flash = 'Purchase deleted. Stock from that purchase was removed.';
+}
+if (isset($_GET['error'])) {
+    $flashType = 'danger';
+    $flash = match ($_GET['error']) {
+        'notfound' => 'Purchase not found.',
+        'invalid' => 'Invalid purchase.',
+        default => 'Something went wrong.',
+    };
+}
+
 require __DIR__ . '/includes/header.php';
 ?>
 
@@ -56,6 +70,13 @@ require __DIR__ . '/includes/header.php';
     <i class="bi bi-plus-lg"></i> New Purchase
   </a>
 </div>
+
+<?php if ($flash !== ''): ?>
+  <div class="alert alert-<?= htmlspecialchars($flashType) ?> alert-dismissible fade show" role="alert">
+    <?= htmlspecialchars($flash) ?>
+    <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+  </div>
+<?php endif; ?>
 
 <form class="row g-2 mb-3" method="GET" action="purchases.php">
   <div class="col-md-4">

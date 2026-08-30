@@ -31,7 +31,8 @@ if (!$sale) {
 
 $itemStmt = $pdo->prepare(
     'SELECT si.*, pr.name AS product_name, pr.product_type, pr.unit, pr.kg_per_sack,
-            sl.buying_price AS lot_buying_price, sl.purchased_at AS lot_purchased_at
+            sl.buying_price AS lot_buying_price, sl.purchased_at AS lot_purchased_at,
+            sl.notes AS lot_notes
      FROM sale_items si
      INNER JOIN products pr ON pr.id = si.product_id
      LEFT JOIN stock_lots sl ON sl.id = si.stock_lot_id
@@ -200,7 +201,7 @@ require __DIR__ . '/includes/header.php';
     <thead class="table-light">
       <tr>
         <th>Product</th>
-        <th>Stack</th>
+        <th>Batch</th>
         <th class="text-end">Qty</th>
         <th class="text-end">Sell price</th>
         <th class="text-end">Cost</th>
@@ -226,17 +227,22 @@ require __DIR__ . '/includes/header.php';
           } else {
               $costLabel = '—';
           }
-          $stackLabel = '—';
+          $batchLabel = '—';
           if (!empty($item['stock_lot_id'])) {
-              $stackLabel = '#' . (int) $item['stock_lot_id'];
+              $lotNotes = trim((string) ($item['lot_notes'] ?? ''));
+              if ($lotNotes !== '') {
+                  $batchLabel = htmlspecialchars($lotNotes);
+              } else {
+                  $batchLabel = '#' . (int) $item['stock_lot_id'];
+              }
               if (!empty($item['lot_purchased_at'])) {
-                  $stackLabel .= ' · ' . htmlspecialchars($item['lot_purchased_at']);
+                  $batchLabel .= ' · ' . htmlspecialchars($item['lot_purchased_at']);
               }
           }
         ?>
         <tr>
           <td class="fw-semibold"><?= htmlspecialchars($item['product_name']) ?></td>
-          <td class="small"><?= $stackLabel ?><div class="text-muted"><?= htmlspecialchars($costLabel) ?></div></td>
+          <td class="small"><?= $batchLabel ?><div class="text-muted"><?= htmlspecialchars($costLabel) ?></div></td>
           <td class="text-end">
             <?= number_format((float) $item['quantity'], $unit === 'pc' ? 0 : 2) ?>
             <?= htmlspecialchars($unit) ?>

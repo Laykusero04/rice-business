@@ -25,6 +25,20 @@ foreach ($products as $p) {
     }
 }
 
+$prefillProductId = isset($_GET['product_id']) ? (int) $_GET['product_id'] : 0;
+if ($prefillProductId > 0) {
+    $validPrefill = false;
+    foreach ($products as $p) {
+        if ((int) $p['id'] === $prefillProductId) {
+            $validPrefill = true;
+            break;
+        }
+    }
+    if (!$validPrefill) {
+        $prefillProductId = 0;
+    }
+}
+
 $flash = '';
 $flashType = 'danger';
 
@@ -49,8 +63,8 @@ require __DIR__ . '/includes/header.php';
   <div>
     <h1 class="h3 mb-1">New Purchase</h1>
     <p class="text-muted mb-0">
-      Rice is bought by sack (stock added in kg). Other items are bought directly by unit (pc/L/ml).
-      Each purchase creates a new priced stack so different buy prices stay separate.
+      Rice is bought by sack (stock added in kg). Other items by unit (pc/L/ml).
+      Each line creates a priced <strong>batch</strong> — use Batch / note when the same product has a different buy price.
     </p>
   </div>
   <a href="purchases.php" class="btn btn-outline-secondary">Purchase History</a>
@@ -115,6 +129,7 @@ require __DIR__ . '/includes/header.php';
         <thead class="table-light">
           <tr>
             <th style="min-width: 200px;">Rice / Product</th>
+            <th style="min-width: 140px;">Batch / note</th>
             <th style="min-width: 120px;">Qty</th>
             <th style="min-width: 150px;">Unit price</th>
             <th style="min-width: 140px;">Stock in</th>
@@ -125,7 +140,7 @@ require __DIR__ . '/includes/header.php';
         <tbody></tbody>
         <tfoot>
           <tr>
-            <td colspan="4" class="text-end fw-semibold">Total</td>
+            <td colspan="5" class="text-end fw-semibold">Total</td>
             <td class="text-end fw-bold" id="grandTotal">₱0.00</td>
             <td></td>
           </tr>
@@ -188,6 +203,15 @@ require __DIR__ . '/includes/header.php';
         </select>
       </td>
       <td>
+        <input
+          type="text"
+          class="form-control batch-label-input"
+          name="batch_label[]"
+          maxlength="255"
+          placeholder="e.g. Wet season"
+        >
+      </td>
+      <td>
         <input type="number" class="form-control qty-input" name="quantity[]" step="0.01" min="0.01" value="1" required>
         <div class="form-text qty-hint">sack</div>
       </td>
@@ -210,6 +234,7 @@ require __DIR__ . '/includes/header.php';
     const tbody = document.querySelector('#itemsTable tbody');
     const template = document.getElementById('itemRowTemplate');
     const grandTotalEl = document.getElementById('grandTotal');
+    const prefillProductId = <?= (int) $prefillProductId ?>;
 
     function formatMoney(value) {
       return '₱' + Number(value).toLocaleString(undefined, {
@@ -285,16 +310,23 @@ require __DIR__ . '/includes/header.php';
       });
     }
 
-    function addRow() {
+    function addRow(presetProductId) {
       const node = template.content.cloneNode(true);
       const row = node.querySelector('tr');
       tbody.appendChild(row);
       bindRow(row);
+      if (presetProductId) {
+        const select = row.querySelector('.product-select');
+        select.value = String(presetProductId);
+        select.dispatchEvent(new Event('change'));
+      }
       recalc();
     }
 
-    document.getElementById('btnAddRow').addEventListener('click', addRow);
-    addRow();
+    document.getElementById('btnAddRow').addEventListener('click', function () {
+      addRow();
+    });
+    addRow(prefillProductId > 0 ? prefillProductId : null);
   });
   </script>
 <?php endif; ?>

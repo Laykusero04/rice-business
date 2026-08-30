@@ -1,8 +1,25 @@
 <?php
 
 /**
- * Stock lot helpers — priced inventory stacks per product.
+ * Stock lot helpers — priced inventory batches per product.
  */
+
+/** Remaining at or below this is treated as none / unsalable crumb (kg or unit). */
+const LOT_NONE_THRESHOLD = 0.05;
+
+/** Remaining below this (but above none) is flagged LOW. */
+const LOT_LOW_THRESHOLD = 1.0;
+
+function isLotUnsalable(float $remaining): bool
+{
+    return round($remaining, 2) < LOT_NONE_THRESHOLD;
+}
+
+function isLotLow(float $remaining): bool
+{
+    $remaining = round($remaining, 2);
+    return $remaining >= LOT_NONE_THRESHOLD && $remaining < LOT_LOW_THRESHOLD;
+}
 
 function createStockLot(
     PDO $pdo,
@@ -53,7 +70,14 @@ function deductStockLot(PDO $pdo, int $lotId, float $quantity): array
         throw new RuntimeException('lot_missing');
     }
 
-    if ((float) $lot['quantity_remaining'] + 0.0001 < $quantity) {
+    $remaining = round((float) $lot['quantity_remaining'], 2);
+
+    // Tiny overshoot from peso→kg rounding: use exact remaining
+    if ($quantity > $remaining && ($quantity - $remaining) <= LOT_NONE_THRESHOLD + 0.0001) {
+        $quantity = $remaining;
+    }
+
+    if ($remaining + 0.0001 < $quantity || $quantity <= 0) {
         throw new RuntimeException('lot_stock');
     }
 
@@ -67,6 +91,9 @@ function deductStockLot(PDO $pdo, int $lotId, float $quantity): array
     if ($update->rowCount() === 0) {
         throw new RuntimeException('lot_stock');
     }
+
+    $lot['quantity_remaining'] = $remaining;
+    $lot['_deducted'] = $quantity;
 
     return $lot;
 }
@@ -86,6 +113,97 @@ function restoreStockLot(PDO $pdo, int $lotId, float $quantity): void
     if ($stmt->rowCount() === 0) {
         throw new RuntimeException('lot_missing');
     }
+}
+
+/**
+ * Zero out leftover on a batch (empty sack / waste) and reduce product stock.
+ *
+ * @return array{product_id:int, quantity:float, unit:string}
+ */
+function writeOffStockLot(PDO $pdo, int $lotId): array
+{
+    $stmt = $pdo->prepare(
+        'SELECT sl.*, p.unit, p.stock
+         FROM stock_lots sl
+         INNER JOIN products p ON p.id = sl.product_id
+         WHERE sl.id = ?
+         FOR UPDATE'
+    );
+    $stmt->execute([$lotId]);
+    $lot = $stmt->fetch();
+
+    if (!$lot) {
+        throw new RuntimeException('lot_missing');
+    }
+
+    $remaining = round((float) $lot['quantity_remaining'], 2);
+    if ($remaining <= 0) {
+        throw new RuntimeException('lot_empty');
+    }
+
+    $productId = (int) $lot['product_id'];
+    $productStock = round((float) $lot['stock'], 2);
+    if ($productStock + 0.0001 < $remaining) {
+        throw new RuntimeException('stock');
+    }
+
+    $pdo->prepare(
+        'UPDATE stock_lots SET quantity_remaining = 0 WHERE id = ?'
+    )->execute([$lotId]);
+
+    $pdo->prepare(
+        'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
+    )->execute([$remaining, $productId, $remaining]);
+
+    return [
+        'product_id' => $productId,
+        'quantity' => $remaining,
+        'unit' => (string) ($lot['unit'] ?? 'kg'),
+    ];
+}
+
+/**
+ * Set product on-hand to a physical count; syncs batches then product.stock.
+ * Returns delta applied (target - old stock).
+ */
+function setPhysicalProductStock(PDO $pdo, int $productId, float $targetStock): float
+{
+    $targetStock = round($targetStock, 2);
+    if ($targetStock < 0) {
+        throw new RuntimeException('invalid');
+    }
+
+    $stmt = $pdo->prepare('SELECT id, stock, buying_price, unit FROM products WHERE id = ? FOR UPDATE');
+    $stmt->execute([$productId]);
+    $product = $stmt->fetch();
+
+    if (!$product) {
+        throw new RuntimeException('product');
+    }
+
+    $unit = $product['unit'] ?? 'kg';
+    if ($unit === 'pc') {
+        $isWhole = abs($targetStock - round($targetStock)) < 0.0001;
+        if (!$isWhole) {
+            throw new RuntimeException('invalid');
+        }
+        $targetStock = (float) round($targetStock);
+    }
+
+    $oldStock = round((float) $product['stock'], 2);
+    $delta = round($targetStock - $oldStock, 2);
+
+    syncProductLotsToStock(
+        $pdo,
+        $productId,
+        $targetStock,
+        (float) $product['buying_price']
+    );
+
+    $pdo->prepare('UPDATE products SET stock = ? WHERE id = ?')
+        ->execute([$targetStock, $productId]);
+
+    return $delta;
 }
 
 /**
@@ -239,11 +357,11 @@ function syncProductLotsToStock(PDO $pdo, int $productId, float $targetStock, fl
 }
 
 /**
- * Human-readable stack label for UI (sack price for rice).
+ * Human-readable batch label for UI (sack price for rice).
  */
 function formatLotLabel(array $lot): string
 {
-    $remaining = (float) $lot['quantity_remaining'];
+    $remaining = round((float) $lot['quantity_remaining'], 2);
     $buyingPrice = (float) $lot['buying_price'];
     $unit = $lot['unit'] ?? 'kg';
     $productType = $lot['product_type'] ?? 'RICE';
@@ -253,16 +371,34 @@ function formatLotLabel(array $lot): string
     }
 
     $date = $lot['purchased_at'] ?? '';
+    $batchNote = trim((string) ($lot['notes'] ?? ''));
+    // Skip generic system notes in the leading label
+    $skipNotes = ['Opening stock', 'Product stock sync'];
+    $showBatch = $batchNote !== '' && !in_array($batchNote, $skipNotes, true)
+        && !preg_match('/^Purchase #\d+$/', $batchNote);
+
+    $statusPrefix = '';
+    if (isLotUnsalable($remaining)) {
+        $statusPrefix = 'NONE · ';
+    } elseif (isLotLow($remaining)) {
+        $statusPrefix = 'LOW · ';
+    }
 
     if ($productType === 'RICE') {
         $sackPrice = round($buyingPrice * $kgPerSack, 2);
         $qtyLabel = number_format($remaining, 2) . ' kg left';
-        return '₱' . number_format($sackPrice, 2) . '/sack · ' . $qtyLabel
+        $core = '₱' . number_format($sackPrice, 2) . '/sack · ' . $qtyLabel
+            . ($date !== '' ? ' · ' . $date : '');
+    } else {
+        $decimals = $unit === 'pc' ? 0 : 2;
+        $core = '₱' . number_format($buyingPrice, 2) . '/' . $unit . ' · '
+            . number_format($remaining, $decimals) . ' ' . $unit . ' left'
             . ($date !== '' ? ' · ' . $date : '');
     }
 
-    $decimals = $unit === 'pc' ? 0 : 2;
-    return '₱' . number_format($buyingPrice, 2) . '/' . $unit . ' · '
-        . number_format($remaining, $decimals) . ' ' . $unit . ' left'
-        . ($date !== '' ? ' · ' . $date : '');
+    if ($showBatch) {
+        return $statusPrefix . $batchNote . ' · ' . $core;
+    }
+
+    return $statusPrefix . $core;
 }

@@ -25,6 +25,7 @@ $notes = trim($_POST['notes'] ?? '');
 $productIds = $_POST['product_id'] ?? [];
 $qtyList = $_POST['quantity'] ?? [];
 $unitPrices = $_POST['unit_price'] ?? [];
+$batchLabels = $_POST['batch_label'] ?? [];
 
 if ($supplierId <= 0 || $purchaseDate === '') {
     header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=required');
@@ -106,6 +107,7 @@ try {
         $productId = (int) ($productIds[$i] ?? 0);
         $qty = (float) ($qtyList[$i] ?? 0);
         $unitPrice = (float) ($unitPrices[$i] ?? 0);
+        $batchLabel = trim((string) ($batchLabels[$i] ?? ''));
 
         if ($productId <= 0 || $qty <= 0 || $unitPrice < 0) {
             continue;
@@ -156,6 +158,7 @@ try {
             'quantity' => $quantityStock,
             'buying_price' => $buyingPriceStored,
             'subtotal' => $subtotal,
+            'batch_label' => $batchLabel !== '' ? $batchLabel : null,
         ];
         $total += $subtotal;
     }
@@ -272,7 +275,7 @@ try {
             (float) $item['buying_price'],
             $purchaseDate,
             $purchaseItemId,
-            'Purchase #' . $purchaseId
+            $item['batch_label'] ?? ('Purchase #' . $purchaseId)
         );
 
         $stockStmt->execute([

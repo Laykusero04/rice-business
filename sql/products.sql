@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS products (
   unit ENUM('kg', 'pc', 'L', 'ml') NOT NULL DEFAULT 'kg',
   buying_price DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
   selling_price DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
+  selling_price_sack DECIMAL(10, 2) DEFAULT NULL,
   kg_per_sack DECIMAL(10, 2) NOT NULL DEFAULT 25.00,
   stock DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
   minimum_stock DECIMAL(10, 2) NOT NULL DEFAULT 0.00,

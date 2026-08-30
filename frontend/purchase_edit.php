@@ -24,9 +24,10 @@ if (!$purchase) {
 }
 
 $itemStmt = $pdo->prepare(
-    'SELECT pi.*, pr.product_type, pr.unit, pr.kg_per_sack
+    'SELECT pi.*, pr.product_type, pr.unit, pr.kg_per_sack, sl.notes AS batch_label
      FROM purchase_items pi
      INNER JOIN products pr ON pr.id = pi.product_id
+     LEFT JOIN stock_lots sl ON sl.purchase_item_id = pi.id
      WHERE pi.purchase_id = ?
      ORDER BY pi.id ASC'
 );
@@ -79,6 +80,7 @@ foreach ($purchaseItems as $item) {
         'product_id' => (int) $item['product_id'],
         'quantity' => round($qtyInput, 2),
         'unit_price' => round($unitPriceInput, 2),
+        'batch_label' => (string) ($item['batch_label'] ?? ''),
     ];
 }
 
@@ -92,7 +94,7 @@ if (isset($_GET['error'])) {
         'stock' => 'Cannot update — not enough stock left for '
             . htmlspecialchars($_GET['product'] ?? 'a product')
             . '. Some of this purchase may already be sold.',
-        'lot_used' => 'Cannot edit this purchase — some of its stock stack has already been sold. Delete or adjust sales first.',
+        'lot_used' => 'Cannot edit this purchase — some of its stock batch has already been sold. Delete or adjust sales first.',
         'save' => 'Could not update the purchase. Please try again.',
         default => 'Something went wrong.',
     };
@@ -196,6 +198,7 @@ require __DIR__ . '/includes/header.php';
         <thead class="table-light">
           <tr>
             <th style="min-width: 200px;">Rice / Product</th>
+            <th style="min-width: 140px;">Batch / note</th>
             <th style="min-width: 120px;">Qty</th>
             <th style="min-width: 150px;">Unit price</th>
             <th style="min-width: 140px;">Stock in</th>
@@ -206,7 +209,7 @@ require __DIR__ . '/includes/header.php';
         <tbody></tbody>
         <tfoot>
           <tr>
-            <td colspan="4" class="text-end fw-semibold">Total</td>
+            <td colspan="5" class="text-end fw-semibold">Total</td>
             <td class="text-end fw-bold" id="grandTotal">₱0.00</td>
             <td></td>
           </tr>
@@ -267,6 +270,15 @@ require __DIR__ . '/includes/header.php';
             </optgroup>
           <?php endif; ?>
         </select>
+      </td>
+      <td>
+        <input
+          type="text"
+          class="form-control batch-label-input"
+          name="batch_label[]"
+          maxlength="255"
+          placeholder="e.g. Wet season"
+        >
       </td>
       <td>
         <input type="number" class="form-control qty-input" name="quantity[]" step="0.01" min="0.01" value="1" required>
@@ -388,6 +400,7 @@ require __DIR__ . '/includes/header.php';
         applyProductUi(row, true);
         row.querySelector('.qty-input').value = item.quantity;
         row.querySelector('.unit-price-input').value = item.unit_price;
+        row.querySelector('.batch-label-input').value = item.batch_label || '';
       } else {
         applyProductUi(row, false);
       }

@@ -96,7 +96,7 @@ try {
     $qtyFormatted = $unit === 'pc'
         ? (string) ((int) round($absQty))
         : number_format($absQty, 2);
-    $lotNote = $lotId > 0 ? ' (stack #' . $lotId . ')' : '';
+    $lotNote = $lotId > 0 ? ' (batch #' . $lotId . ')' : '';
     $movement->execute([
         $productId,
         'ADJUSTMENT',

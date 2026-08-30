@@ -40,11 +40,23 @@ $itemStmt->execute([$id]);
 $items = $itemStmt->fetchAll();
 
 $flash = '';
+$flashType = 'success';
 if (isset($_GET['success'])) {
     $flash = match ($_GET['success']) {
         'created' => 'Purchase saved. Stock has been updated.',
         'updated' => 'Purchase updated successfully.',
         default => '',
+    };
+}
+if (isset($_GET['error'])) {
+    $flashType = 'danger';
+    $flash = match ($_GET['error']) {
+        'lot_used' => 'Cannot delete — some stock from this purchase was already sold. Delete or edit those sales first.',
+        'stock' => 'Cannot delete — not enough stock left for '
+            . htmlspecialchars($_GET['product'] ?? 'a product')
+            . '.',
+        'delete' => 'Could not delete this purchase.',
+        default => 'Something went wrong.',
     };
 }
 
@@ -64,14 +76,23 @@ require __DIR__ . '/includes/header.php';
   </div>
   <div class="d-flex gap-2">
     <a href="purchase_edit.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-outline-primary">Edit</a>
+    <form
+      method="POST"
+      action="/rice-business/backend/purchase_delete.php"
+      class="d-inline"
+      onsubmit="return confirm('Delete this purchase? Stock from it will be removed (only if not sold yet).');"
+    >
+      <input type="hidden" name="id" value="<?= (int) $purchase['id'] ?>">
+      <button type="submit" class="btn btn-outline-danger">Delete</button>
+    </form>
     <a href="purchases.php" class="btn btn-outline-secondary">Back to History</a>
     <a href="purchase_new.php" class="btn btn-rice">New Purchase</a>
   </div>
 </div>
 
 <?php if ($flash !== ''): ?>
-  <div class="alert alert-success alert-dismissible fade show" role="alert">
-    <?= htmlspecialchars($flash) ?>
+  <div class="alert alert-<?= htmlspecialchars($flashType) ?> alert-dismissible fade show" role="alert">
+    <?= $flashType === 'danger' ? $flash : htmlspecialchars($flash) ?>
     <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
   </div>
 <?php endif; ?>

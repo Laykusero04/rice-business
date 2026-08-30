@@ -31,6 +31,15 @@ $navItems = [
     ],
     ['id' => 'customers', 'label' => 'Customers', 'icon' => 'bi-people', 'href' => 'customers.php'],
     ['id' => 'suppliers', 'label' => 'Suppliers', 'icon' => 'bi-truck', 'href' => 'suppliers.php'],
+    [
+        'id' => 'gcash',
+        'label' => 'GCash',
+        'icon' => 'bi-phone',
+        'children' => [
+            ['id' => 'gcash-new', 'label' => 'New Transaction', 'href' => 'gcash_new.php'],
+            ['id' => 'gcash-history', 'label' => 'History', 'href' => 'gcash.php'],
+        ],
+    ],
     ['id' => 'expenses', 'label' => 'Expenses', 'icon' => 'bi-cash-stack', 'href' => 'expenses.php'],
     [
         'id' => 'reports-group',

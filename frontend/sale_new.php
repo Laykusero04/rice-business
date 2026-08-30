@@ -10,7 +10,7 @@ $activePage = 'sales-new';
 
 $customers = $pdo->query('SELECT id, name FROM customers ORDER BY name ASC')->fetchAll();
 $products = $pdo->query(
-    "SELECT id, name, product_type, unit, selling_price, stock
+    "SELECT id, name, product_type, unit, selling_price, selling_price_sack, kg_per_sack, stock
      FROM products
      WHERE status = 'active'
      ORDER BY (product_type = 'RICE') DESC, name ASC"
@@ -20,24 +20,47 @@ $lotsByProduct = fetchOpenLotsByProduct($pdo);
 
 $lotsForJs = [];
 foreach ($lotsByProduct as $pid => $lots) {
-    $lotsForJs[(string) $pid] = array_map(static function ($lot) {
-        return [
+    $sellable = [];
+    foreach ($lots as $lot) {
+        $remaining = round((float) $lot['quantity_remaining'], 2);
+        // Hide unsalable crumbs from New Sale
+        if (isLotUnsalable($remaining)) {
+            continue;
+        }
+        $sellable[] = [
             'id' => (int) $lot['id'],
             'label' => formatLotLabel($lot),
-            'remaining' => (float) $lot['quantity_remaining'],
+            'remaining' => $remaining,
+            'low' => isLotLow($remaining),
         ];
-    }, $lots);
+    }
+    if (count($sellable) > 0) {
+        $lotsForJs[(string) $pid] = $sellable;
+        $lotsByProduct[$pid] = array_values(array_filter(
+            $lots,
+            static fn ($lot) => !isLotUnsalable((float) $lot['quantity_remaining'])
+        ));
+    } else {
+        unset($lotsByProduct[$pid]);
+    }
 }
 
 $riceProducts = [];
 $otherProducts = [];
 foreach ($products as $p) {
+    $pid = (int) $p['id'];
+    // Only products with an open batch can be sold
+    if (!isset($lotsByProduct[$pid]) || count($lotsByProduct[$pid]) === 0) {
+        continue;
+    }
     if (($p['product_type'] ?? 'RICE') === 'RICE') {
         $riceProducts[] = $p;
     } else {
         $otherProducts[] = $p;
     }
 }
+
+$hasSellable = count($riceProducts) + count($otherProducts) > 0;
 
 $flash = '';
 $flashType = 'danger';
@@ -46,11 +69,11 @@ if (isset($_GET['error'])) {
     $flash = match ($_GET['error']) {
         'required' => 'Sale date is required.',
         'customer' => 'Enter the borrower name for walk-in utang, or select a customer.',
-        'items' => 'Add at least one valid product line and choose a stock stack.',
+        'items' => 'Add at least one valid product line and choose a stock batch.',
         'stock' => 'Not enough stock for '
             . htmlspecialchars($_GET['product'] ?? 'selected product')
             . '.',
-        'lot' => 'Choose a valid stock stack for each item.',
+        'lot' => 'Choose a valid stock batch for each item.',
         'save' => 'Could not save the sale. Please try again.',
         default => 'Something went wrong.',
     };
@@ -64,7 +87,8 @@ require __DIR__ . '/includes/header.php';
     <h1 class="h3 mb-1">New Sale</h1>
     <p class="text-muted mb-0">
       Just buying? Leave customer as walk-in. Use Lend only for utang.
-      Pick which priced stack to sell from when a product has more than one buy price.
+      Qty is in kg (0.01) or whole sacks. <strong>By kg</strong> uses the small-kg sell price;
+      <strong>By sack</strong> uses the whole-sack sell price (no scoop waste). Batches under 0.05 kg are hidden.
     </p>
   </div>
   <a href="sales.php" class="btn btn-outline-secondary">Sales History</a>
@@ -77,9 +101,11 @@ require __DIR__ . '/includes/header.php';
   </div>
 <?php endif; ?>
 
-<?php if (count($products) === 0): ?>
+<?php if (!$hasSellable): ?>
   <div class="alert alert-warning">
-    Add at least one active <a href="products.php">product</a> before creating a sale.
+    No products with stock batches to sell.
+    Add stock via <a href="purchase_new.php">New Purchase</a>, or create a
+    <a href="products.php">product</a> first.
   </div>
 <?php else: ?>
   <form method="POST" action="/rice-business/backend/sale_save.php" id="saleForm" class="bg-white rounded shadow-sm p-3 p-md-4">
@@ -143,9 +169,9 @@ require __DIR__ . '/includes/header.php';
       <table class="table align-middle" id="itemsTable">
         <thead class="table-light">
           <tr>
-            <th style="min-width: 200px;">Rice / Product</th>
-            <th style="min-width: 220px;">Stack</th>
-            <th style="min-width: 110px;">₱/kg</th>
+            <th style="min-width: 220px;">Rice / Product</th>
+            <th style="min-width: 240px;">Batch</th>
+            <th style="min-width: 110px;">Price</th>
             <th style="min-width: 110px;">Qty</th>
             <th style="min-width: 120px;" class="text-end">Total (₱)</th>
             <th></th>
@@ -171,19 +197,39 @@ require __DIR__ . '/includes/header.php';
   <template id="itemRowTemplate">
     <tr>
       <td>
+        <input
+          type="search"
+          class="form-control form-control-sm mb-1 product-filter"
+          placeholder="Search product…"
+          autocomplete="off"
+          aria-label="Filter products"
+        >
         <select class="form-select product-select" name="product_id[]" required>
           <option value="">Select product</option>
           <?php if (count($riceProducts) > 0): ?>
             <optgroup label="Rice (kg)">
               <?php foreach ($riceProducts as $product): ?>
+                <?php
+                  $kgPerSack = (float) ($product['kg_per_sack'] ?? 25);
+                  if ($kgPerSack <= 0) {
+                      $kgPerSack = 25;
+                  }
+                  $sackSell = isset($product['selling_price_sack']) && $product['selling_price_sack'] !== null
+                    ? (float) $product['selling_price_sack']
+                    : round((float) $product['selling_price'] * $kgPerSack, 2);
+                ?>
                 <option
                   value="<?= (int) $product['id'] ?>"
+                  data-product-type="RICE"
                   data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
+                  data-selling-price-sack="<?= htmlspecialchars(number_format($sackSell, 2, '.', '')) ?>"
+                  data-kg-per-sack="<?= htmlspecialchars(number_format($kgPerSack, 2, '.', '')) ?>"
                   data-stock="<?= htmlspecialchars($product['stock']) ?>"
-                  data-unit="<?= htmlspecialchars($product['unit'] ?? 'kg') ?>"
+                  data-unit="kg"
+                  data-name="<?= htmlspecialchars($product['name'], ENT_QUOTES) ?>"
                 >
                   <?= htmlspecialchars($product['name']) ?>
-                  (stock: <?= number_format((float) $product['stock'], 2) ?> kg)
+                  (<?= number_format((float) $product['stock'], 2) ?> kg)
                 </option>
               <?php endforeach; ?>
             </optgroup>
@@ -194,12 +240,14 @@ require __DIR__ . '/includes/header.php';
                 <?php $unit = $product['unit'] ?? 'pc'; ?>
                 <option
                   value="<?= (int) $product['id'] ?>"
+                  data-product-type="GROCERY"
                   data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
                   data-stock="<?= htmlspecialchars($product['stock']) ?>"
                   data-unit="<?= htmlspecialchars($unit) ?>"
+                  data-name="<?= htmlspecialchars($product['name'], ENT_QUOTES) ?>"
                 >
                   <?= htmlspecialchars($product['name']) ?>
-                  (stock: <?= number_format((float) $product['stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>)
+                  (<?= number_format((float) $product['stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>)
                 </option>
               <?php endforeach; ?>
             </optgroup>
@@ -207,18 +255,19 @@ require __DIR__ . '/includes/header.php';
         </select>
         <div class="btn-group btn-group-sm mt-2 w-100 entry-mode" role="group" aria-label="How to enter this item">
           <button type="button" class="btn btn-outline-secondary btn-mode active" data-mode="qty">By kg</button>
+          <button type="button" class="btn btn-outline-secondary btn-mode btn-mode-sack d-none" data-mode="sack">By sack</button>
           <button type="button" class="btn btn-outline-secondary btn-mode" data-mode="amount">By ₱ amount</button>
         </div>
       </td>
       <td>
         <select class="form-select lot-select" name="stock_lot_id[]" required>
-          <option value="">Select stack</option>
+          <option value="">Select batch</option>
         </select>
-        <div class="form-text lot-hint">Buy price stack</div>
+        <div class="form-text lot-hint">Priced batch (buy cost)</div>
       </td>
       <td>
         <input type="number" class="form-control price-input" name="price[]" step="0.01" min="0" value="0" required>
-        <div class="form-text">per kg</div>
+        <div class="form-text price-hint">per kg</div>
       </td>
       <td>
         <input type="number" class="form-control qty-input" name="quantity[]" step="0.01" min="0.01" value="1" required>
@@ -295,6 +344,7 @@ require __DIR__ . '/includes/header.php';
 
     function bindRow(row) {
       const productSelect = row.querySelector('.product-select');
+      const productFilter = row.querySelector('.product-filter');
       const lotSelect = row.querySelector('.lot-select');
       const priceInput = row.querySelector('.price-input');
       const qtyInput = row.querySelector('.qty-input');
@@ -302,42 +352,100 @@ require __DIR__ . '/includes/header.php';
       const subtotalDisplay = row.querySelector('.subtotal-display');
       const lineSubtotalHidden = row.querySelector('.line-subtotal-hidden');
       const qtyHint = row.querySelector('.qty-hint');
+      const priceHint = row.querySelector('.price-hint');
+      const lotHint = row.querySelector('.lot-hint');
+      const sackModeBtn = row.querySelector('.btn-mode-sack');
       let entryMode = 'qty';
 
+      function getSelectedOption() {
+        return productSelect.selectedOptions[0] || null;
+      }
+
       function getUnit() {
-        const option = productSelect.selectedOptions[0];
+        const option = getSelectedOption();
         return option && option.dataset.unit ? option.dataset.unit : 'kg';
+      }
+
+      function isRice() {
+        const option = getSelectedOption();
+        return option && option.dataset.productType === 'RICE';
+      }
+
+      function getKgPerSack() {
+        const option = getSelectedOption();
+        const kg = option ? parseFloat(option.dataset.kgPerSack) : 25;
+        return kg > 0 ? kg : 25;
+      }
+
+      function filterProducts() {
+        const q = (productFilter.value || '').trim().toLowerCase();
+        productSelect.querySelectorAll('option').forEach(function (opt) {
+          if (!opt.value) {
+            opt.hidden = false;
+            return;
+          }
+          const name = (opt.dataset.name || opt.textContent || '').toLowerCase();
+          opt.hidden = q !== '' && name.indexOf(q) === -1;
+        });
+        productSelect.querySelectorAll('optgroup').forEach(function (group) {
+          const anyVisible = [...group.querySelectorAll('option')].some(function (opt) {
+            return !opt.hidden;
+          });
+          group.hidden = !anyVisible;
+        });
       }
 
       function formatQtyFromAmount(qty) {
         if (getUnit() === 'pc') {
           return String(Math.max(1, Math.round(qty)));
         }
-        return (Math.round(qty * 10000) / 10000).toFixed(4);
+        return (Math.round(qty * 100) / 100).toFixed(2);
       }
 
       function syncLineSubtotalHidden() {
         if (entryMode === 'amount') {
           const amount = parseFloat(subtotalInput.value);
           lineSubtotalHidden.value = amount > 0 ? amount.toFixed(2) : '';
+        } else if (entryMode === 'sack') {
+          const sacks = parseFloat(qtyInput.value) || 0;
+          const sackPrice = parseFloat(priceInput.value) || 0;
+          lineSubtotalHidden.value = sacks > 0 && sackPrice >= 0
+            ? (sacks * sackPrice).toFixed(2)
+            : '';
         } else {
           lineSubtotalHidden.value = '';
         }
       }
 
-      function applyUnitRules() {
-        const unit = getUnit();
-        if (entryMode === 'qty') {
-          qtyHint.textContent = unit;
+      function updateModeButtons() {
+        if (sackModeBtn) {
+          sackModeBtn.classList.toggle('d-none', !isRice());
         }
-        if (unit === 'pc') {
+        if (!isRice() && entryMode === 'sack') {
+          setEntryMode('qty', true);
+        }
+      }
+
+      function applyUnitRules() {
+        if (entryMode === 'sack') {
+          qtyHint.textContent = 'sack';
+          priceHint.textContent = 'per sack';
+          qtyInput.step = '0.01';
+          qtyInput.min = '0.01';
+          return;
+        }
+        if (entryMode === 'qty') {
+          qtyHint.textContent = getUnit();
+        }
+        priceHint.textContent = 'per ' + getUnit();
+        if (getUnit() === 'pc') {
           qtyInput.step = '1';
           qtyInput.min = '1';
           if (entryMode === 'qty') {
             qtyInput.value = String(Math.max(1, Math.round(parseFloat(qtyInput.value) || 1)));
           }
         } else {
-          qtyInput.step = entryMode === 'amount' ? '0.0001' : '0.01';
+          qtyInput.step = '0.01';
           qtyInput.min = '0.01';
         }
       }
@@ -345,9 +453,37 @@ require __DIR__ . '/includes/header.php';
       function applyLotMax() {
         const lotOption = lotSelect.selectedOptions[0];
         if (lotOption && lotOption.dataset.remaining) {
-          qtyInput.max = lotOption.dataset.remaining;
+          const remKg = Math.round(parseFloat(lotOption.dataset.remaining) * 100) / 100;
+          if (entryMode === 'sack') {
+            const kgPerSack = getKgPerSack();
+            const remSacks = Math.round((remKg / kgPerSack) * 100) / 100;
+            qtyInput.max = String(remSacks);
+            lotHint.textContent = remKg < 1
+              ? 'LOW — only ' + remKg.toFixed(2) + ' kg left (~' + remSacks.toFixed(2) + ' sack)'
+              : 'Up to ' + remSacks.toFixed(2) + ' sack (' + remKg.toFixed(2) + ' kg) in this batch';
+            const currentQty = parseFloat(qtyInput.value) || 0;
+            if (currentQty > remSacks + 0.0001) {
+              qtyInput.value = remSacks.toFixed(2);
+              if (entryMode === 'sack') {
+                updateTotalDisplay();
+              }
+            }
+          } else {
+            qtyInput.max = String(remKg);
+            lotHint.textContent = remKg < 1
+              ? 'LOW — only ' + remKg.toFixed(2) + ' ' + getUnit() + ' left in this batch'
+              : 'Up to ' + remKg.toFixed(2) + ' ' + getUnit() + ' in this batch';
+            const currentQty = parseFloat(qtyInput.value) || 0;
+            if (entryMode !== 'amount' && currentQty > remKg + 0.0001) {
+              qtyInput.value = remKg.toFixed(2);
+              if (entryMode === 'qty') {
+                updateTotalDisplay();
+              }
+            }
+          }
         } else {
           qtyInput.removeAttribute('max');
+          lotHint.textContent = 'Priced batch (buy cost)';
         }
       }
 
@@ -359,7 +495,7 @@ require __DIR__ . '/includes/header.php';
 
         const placeholder = document.createElement('option');
         placeholder.value = '';
-        placeholder.textContent = lots.length ? 'Select stack' : 'No stack available';
+        placeholder.textContent = lots.length ? 'Select batch' : 'No batch available';
         lotSelect.appendChild(placeholder);
 
         lots.forEach(function (lot) {
@@ -407,13 +543,59 @@ require __DIR__ . '/includes/header.php';
         }
       }
 
-      function setEntryMode(mode) {
-        if (mode === 'amount' && entryMode === 'qty') {
-          const qty = parseFloat(qtyInput.value) || 0;
-          const price = parseFloat(priceInput.value) || 0;
-          if (qty > 0 && price > 0) {
-            subtotalInput.value = (qty * price).toFixed(2);
+      function applyDefaultPrice(forMode) {
+        const option = getSelectedOption();
+        if (!option) {
+          return;
+        }
+        const mode = forMode || entryMode;
+        if (mode === 'sack' && option.dataset.sellingPriceSack) {
+          priceInput.value = option.dataset.sellingPriceSack;
+        } else if (option.dataset.sellingPrice) {
+          priceInput.value = option.dataset.sellingPrice;
+        }
+      }
+
+      function setEntryMode(mode, skipConvert) {
+        const prevMode = entryMode;
+        const kgPerSack = getKgPerSack();
+
+        if (!skipConvert) {
+          if (mode === 'sack' && prevMode === 'qty' && isRice()) {
+            const kg = parseFloat(qtyInput.value) || 0;
+            if (kg > 0 && kgPerSack > 0) {
+              qtyInput.value = (Math.round((kg / kgPerSack) * 100) / 100).toFixed(2);
+            }
+            applyDefaultPrice('sack');
+          } else if (mode === 'qty' && prevMode === 'sack') {
+            const sacks = parseFloat(qtyInput.value) || 0;
+            if (sacks > 0 && kgPerSack > 0) {
+              qtyInput.value = (Math.round(sacks * kgPerSack * 100) / 100).toFixed(2);
+            }
+            applyDefaultPrice('qty');
+          } else if (mode === 'amount' && (prevMode === 'qty' || prevMode === 'sack')) {
+            if (prevMode === 'sack') {
+              const option = getSelectedOption();
+              if (option && option.dataset.sellingPrice) {
+                priceInput.value = option.dataset.sellingPrice;
+              }
+              const sacks = parseFloat(qtyInput.value) || 0;
+              if (sacks > 0 && kgPerSack > 0) {
+                qtyInput.value = (Math.round(sacks * kgPerSack * 100) / 100).toFixed(2);
+              }
+            }
+            const qty = parseFloat(qtyInput.value) || 0;
+            const price = parseFloat(priceInput.value) || 0;
+            if (qty > 0 && price > 0) {
+              subtotalInput.value = (qty * price).toFixed(2);
+            }
+          } else if ((mode === 'qty' || mode === 'sack') && prevMode === 'amount') {
+            applyDefaultPrice(mode);
           }
+        }
+
+        if (mode === 'sack' && !isRice()) {
+          mode = 'qty';
         }
 
         entryMode = mode;
@@ -428,10 +610,12 @@ require __DIR__ . '/includes/header.php';
         qtyInput.classList.toggle('bg-light', isAmount);
         subtotalInput.classList.toggle('d-none', !isAmount);
         subtotalDisplay.classList.toggle('d-none', isAmount);
-        qtyHint.textContent = isAmount ? 'auto' : getUnit();
         applyUnitRules();
+        applyLotMax();
 
         if (isAmount) {
+          qtyHint.textContent = 'auto';
+          priceHint.textContent = 'per ' + getUnit();
           calcQtyFromAmount();
           subtotalInput.focus();
         } else {
@@ -439,11 +623,11 @@ require __DIR__ . '/includes/header.php';
         }
       }
 
+      productFilter.addEventListener('input', filterProducts);
+
       productSelect.addEventListener('change', function () {
-        const option = productSelect.selectedOptions[0];
-        if (option && option.dataset.sellingPrice) {
-          priceInput.value = option.dataset.sellingPrice;
-        }
+        updateModeButtons();
+        applyDefaultPrice();
         populateLots();
         applyUnitRules();
         refreshLine();
@@ -454,7 +638,7 @@ require __DIR__ . '/includes/header.php';
       });
 
       qtyInput.addEventListener('input', function () {
-        if (entryMode === 'qty') {
+        if (entryMode === 'qty' || entryMode === 'sack') {
           updateTotalDisplay();
         }
       });
@@ -480,7 +664,23 @@ require __DIR__ . '/includes/header.php';
       });
 
       row._populateLots = populateLots;
-      setEntryMode('qty');
+      row._prepareSubmit = function () {
+        if (entryMode !== 'sack') {
+          return;
+        }
+        const sacks = parseFloat(qtyInput.value) || 0;
+        const sackPrice = parseFloat(priceInput.value) || 0;
+        const kgPerSack = getKgPerSack();
+        const kg = Math.round(sacks * kgPerSack * 100) / 100;
+        const lineTotal = Math.round(sacks * sackPrice * 100) / 100;
+        const perKg = kg > 0 ? Math.round((lineTotal / kg) * 100) / 100 : 0;
+        qtyInput.value = kg.toFixed(2);
+        priceInput.value = perKg.toFixed(2);
+        lineSubtotalHidden.value = lineTotal.toFixed(2);
+      };
+
+      updateModeButtons();
+      setEntryMode('qty', true);
     }
 
     function addRow() {
@@ -489,6 +689,17 @@ require __DIR__ . '/includes/header.php';
       tbody.appendChild(row);
       bindRow(row);
       recalcGrandTotal();
+    }
+
+    const saleForm = document.querySelector('form');
+    if (saleForm) {
+      saleForm.addEventListener('submit', function () {
+        tbody.querySelectorAll('tr').forEach(function (row) {
+          if (typeof row._prepareSubmit === 'function') {
+            row._prepareSubmit();
+          }
+        });
+      });
     }
 
     paymentMethod.addEventListener('change', updateLendUi);

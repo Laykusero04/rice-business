@@ -93,6 +93,13 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
+$allRiceForDropdown = $pdo->query(
+    "SELECT id, name FROM products WHERE product_type = 'RICE' ORDER BY name ASC"
+)->fetchAll();
+$allGroceryForDropdown = $pdo->query(
+    "SELECT id, name FROM products WHERE product_type = 'GROCERY' ORDER BY name ASC"
+)->fetchAll();
+
 $flash = '';
 $flashType = 'success';
 
@@ -132,7 +139,10 @@ require __DIR__ . '/includes/header.php';
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
     <h1 class="h3 mb-1">Products</h1>
-    <p class="text-muted mb-0">Rice is managed by sack (stored in kg). Other items are managed directly by unit (pc/L/ml).</p>
+    <p class="text-muted mb-0">
+      Products are the catalog. Add stock as priced <strong>batches</strong> via
+      <a href="purchase_new.php">New Purchase</a> — same product can have different buy prices.
+    </p>
   </div>
   <div class="d-flex flex-wrap gap-2">
     <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#categoryModal">
@@ -238,7 +248,10 @@ require __DIR__ . '/includes/header.php';
             $minStock = (float) $product['minimum_stock'];
             $sacks = $productType === 'RICE' ? ($stock / $kgPerSack) : 0.0;
             $minSacks = $productType === 'RICE' ? ($minStock / $kgPerSack) : 0.0;
-            $sackPrice = (float) $product['buying_price'] * $kgPerSack;
+            $sackBuyPrice = (float) $product['buying_price'] * $kgPerSack;
+            $sackSellPrice = isset($product['selling_price_sack']) && $product['selling_price_sack'] !== null
+              ? (float) $product['selling_price_sack']
+              : round((float) $product['selling_price'] * $kgPerSack, 2);
             $isLow = $stock <= $minStock;
           ?>
           <tr>
@@ -254,14 +267,19 @@ require __DIR__ . '/includes/header.php';
             <td><?= htmlspecialchars($unit) ?></td>
             <td class="text-end">
               <?php if ($productType === 'RICE'): ?>
-                ₱<?= number_format($sackPrice, 2) ?>
+                ₱<?= number_format($sackBuyPrice, 2) ?> / sack
                 <div class="small text-muted">₱<?= number_format((float) $product['buying_price'], 2) ?> / kg</div>
               <?php else: ?>
                 ₱<?= number_format((float) $product['buying_price'], 2) ?> / <?= htmlspecialchars($unit) ?>
               <?php endif; ?>
             </td>
             <td class="text-end">
-              ₱<?= number_format((float) $product['selling_price'], 2) ?> / <?= htmlspecialchars($unit) ?>
+              <?php if ($productType === 'RICE'): ?>
+                ₱<?= number_format($sackSellPrice, 2) ?> / sack
+                <div class="small text-muted">₱<?= number_format((float) $product['selling_price'], 2) ?> / kg (small)</div>
+              <?php else: ?>
+                ₱<?= number_format((float) $product['selling_price'], 2) ?> / <?= htmlspecialchars($unit) ?>
+              <?php endif; ?>
             </td>
             <td class="text-end <?= $isLow ? 'text-danger fw-semibold' : '' ?>">
               <?php if ($productType === 'RICE'): ?>
@@ -300,10 +318,11 @@ require __DIR__ . '/includes/header.php';
                 data-unit="<?= htmlspecialchars($unit, ENT_QUOTES) ?>"
                 data-kg-per-sack="<?= htmlspecialchars(number_format($kgPerSack, 2, '.', '')) ?>"
                 data-sacks="<?= htmlspecialchars(number_format($sacks, 2, '.', '')) ?>"
-                data-sack-price="<?= htmlspecialchars(number_format($sackPrice, 2, '.', '')) ?>"
+                data-sack-price="<?= htmlspecialchars(number_format($sackBuyPrice, 2, '.', '')) ?>"
                 data-buying-price="<?= htmlspecialchars(number_format((float) $product['buying_price'], 2, '.', '')) ?>"
                 data-stock="<?= htmlspecialchars(number_format($stock, 2, '.', '')) ?>"
                 data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
+                data-selling-price-sack="<?= htmlspecialchars(number_format($sackSellPrice, 2, '.', '')) ?>"
                 data-min-sacks="<?= htmlspecialchars(number_format($minSacks, 2, '.', '')) ?>"
                 data-min-stock="<?= htmlspecialchars(number_format($minStock, 2, '.', '')) ?>"
                 data-status="<?= htmlspecialchars($product['status']) ?>"
@@ -331,77 +350,110 @@ require __DIR__ . '/includes/header.php';
 <div class="modal fade" id="riceModal" tabindex="-1" aria-labelledby="riceModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
-      <form method="POST" action="/rice-business/backend/product_save.php" id="riceForm">
-        <div class="modal-header">
-          <h2 class="modal-title fs-5" id="riceModalLabel">Add Rice</h2>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-        </div>
-        <div class="modal-body">
-          <input type="hidden" name="id" id="riceProductId" value="">
-          <input type="hidden" name="product_type" value="RICE">
-          <input type="hidden" name="unit" value="kg">
-
-          <p class="small text-muted">Rice is bought by sack from suppliers. Stock is stored in kg automatically.</p>
-
-          <div class="mb-3">
-            <label for="riceName" class="form-label">Rice Name</label>
-            <input type="text" class="form-control" id="riceName" name="name" required maxlength="100" placeholder="e.g. Dinorado">
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="riceModalLabel">Add Rice</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="riceAddModeWrap" class="mb-3">
+          <label class="form-label d-block">What do you want to do?</label>
+          <div class="btn-group w-100" role="group" aria-label="Rice add mode">
+            <input type="radio" class="btn-check" name="riceAddMode" id="riceModeNew" value="new" checked>
+            <label class="btn btn-outline-secondary" for="riceModeNew">New product</label>
+            <input type="radio" class="btn-check" name="riceAddMode" id="riceModeExisting" value="existing">
+            <label class="btn btn-outline-secondary" for="riceModeExisting">Existing (add batch)</label>
           </div>
+        </div>
 
+        <div id="riceExistingPanel" class="d-none">
+          <p class="small text-muted">
+            Same rice, different buy price? Pick the product, then stock it as a new batch on a purchase.
+          </p>
           <div class="mb-3">
-            <label for="riceCategory" class="form-label">Category</label>
-            <select class="form-select" id="riceCategory" name="category" required>
-              <option value="">Select category</option>
-              <?php foreach ($riceCategories as $cat): ?>
-                <option value="<?= htmlspecialchars($cat['name']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
+            <label for="riceExistingSelect" class="form-label">Rice product</label>
+            <select class="form-select" id="riceExistingSelect">
+              <option value="">Select rice…</option>
+              <?php foreach ($allRiceForDropdown as $rp): ?>
+                <option value="<?= (int) $rp['id'] ?>"><?= htmlspecialchars($rp['name']) ?></option>
               <?php endforeach; ?>
             </select>
           </div>
+          <a href="purchase_new.php" class="btn btn-rice w-100 disabled" id="riceContinuePurchase" aria-disabled="true">
+            Continue to New Purchase
+          </a>
+        </div>
 
-          <div class="border rounded p-3 mb-3 bg-light">
-            <div class="fw-semibold mb-2">Buy from supplier (by sack)</div>
-            <div class="row g-3">
-              <div class="col-md-4">
-                <label for="riceKgPerSack" class="form-label">Kg per sack</label>
-                <input type="number" class="form-control rice-sack-calc" id="riceKgPerSack" name="kg_per_sack" step="0.01" min="0.01" value="25" required>
+        <form method="POST" action="/rice-business/backend/product_save.php" id="riceForm">
+          <div id="riceCatalogFields">
+            <input type="hidden" name="id" id="riceProductId" value="">
+            <input type="hidden" name="product_type" value="RICE">
+            <input type="hidden" name="unit" value="kg">
+
+            <p class="small text-muted" id="riceCatalogHint">
+              Catalog only — stock comes from Purchases as batches (by sack).
+            </p>
+
+            <div class="mb-3" id="riceStockReadonlyWrap" hidden>
+              <label class="form-label">Current stock</label>
+              <div class="form-control-plaintext" id="riceStockReadonly">—</div>
+              <div class="form-text">Change stock by adding a batch on New Purchase.</div>
+            </div>
+
+            <div class="mb-3">
+              <label for="riceName" class="form-label">Rice Name</label>
+              <input type="text" class="form-control" id="riceName" name="name" required maxlength="100" placeholder="e.g. Dinorado">
+            </div>
+
+            <div class="mb-3">
+              <label for="riceCategory" class="form-label">Category</label>
+              <select class="form-select" id="riceCategory" name="category" required>
+                <option value="">Select category</option>
+                <?php foreach ($riceCategories as $cat): ?>
+                  <option value="<?= htmlspecialchars($cat['name']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
+                <?php endforeach; ?>
+              </select>
+            </div>
+
+            <div class="mb-3">
+              <label for="riceKgPerSack" class="form-label">Kg per sack</label>
+              <input type="number" class="form-control" id="riceKgPerSack" name="kg_per_sack" step="0.01" min="0.01" value="25" required>
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label for="riceSellingPrice" class="form-label">Sell per kg — small (₱)</label>
+                <input type="number" class="form-control" id="riceSellingPrice" name="selling_price" step="0.01" min="0" required>
+                <div class="form-text">Scooped / small kg (higher for waste)</div>
               </div>
-              <div class="col-md-4">
-                <label for="riceSacks" class="form-label">How many sacks?</label>
-                <input type="number" class="form-control rice-sack-calc" id="riceSacks" name="sacks" step="0.01" min="0" value="0" required>
-              </div>
-              <div class="col-md-4">
-                <label for="riceSackPrice" class="form-label">Price per sack (₱)</label>
-                <input type="number" class="form-control rice-sack-calc" id="riceSackPrice" name="sack_price" step="0.01" min="0" value="0" required>
+              <div class="col-md-6">
+                <label for="riceSellingPriceSack" class="form-label">Sell per sack (₱)</label>
+                <input type="number" class="form-control" id="riceSellingPriceSack" name="selling_price_sack" step="0.01" min="0" required>
+                <div class="form-text">Whole sack price</div>
               </div>
             </div>
-            <div class="small text-muted mt-2" id="riceSackSummary">Stock: 0.00 kg · Buy price: ₱0.00 / kg</div>
-          </div>
 
-          <div class="row g-3 mb-3">
-            <div class="col-md-6">
-              <label for="riceSellingPrice" class="form-label">Selling price per kg (₱)</label>
-              <input type="number" class="form-control" id="riceSellingPrice" name="selling_price" step="0.01" min="0" required>
-              <div class="form-text" id="riceIdealSellHint">Ideal: enter sack price to see a suggested sell price</div>
-            </div>
-            <div class="col-md-6">
+            <div class="mb-3">
               <label for="riceMinSacks" class="form-label">Low stock alert (sacks)</label>
-              <input type="number" class="form-control rice-sack-calc" id="riceMinSacks" name="min_sacks" step="0.01" min="0" value="1" required>
+              <input type="number" class="form-control" id="riceMinSacks" name="min_sacks" step="0.01" min="0" value="1" required>
+            </div>
+
+            <div class="mb-0">
+              <label for="riceStatus" class="form-label">Status</label>
+              <select class="form-select" id="riceStatus" name="status">
+                <option value="active">Active</option>
+                <option value="inactive">Inactive</option>
+              </select>
             </div>
           </div>
-
-          <div class="mb-0">
-            <label for="riceStatus" class="form-label">Status</label>
-            <select class="form-select" id="riceStatus" name="status">
-              <option value="active">Active</option>
-              <option value="inactive">Inactive</option>
-            </select>
+          <div class="modal-footer px-0 pb-0" id="riceFormFooter">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="submit" class="btn btn-rice" id="riceSubmitBtn">Save Rice</button>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-rice" id="riceSubmitBtn">Save Rice</button>
-        </div>
-      </form>
+        </form>
+      </div>
+      <div class="modal-footer d-none" id="riceExistingFooter">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+      </div>
     </div>
   </div>
 </div>
@@ -410,67 +462,92 @@ require __DIR__ . '/includes/header.php';
 <div class="modal fade" id="groceryModal" tabindex="-1" aria-labelledby="groceryModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
-      <form method="POST" action="/rice-business/backend/product_save.php" id="groceryForm">
-        <div class="modal-header">
-          <h2 class="modal-title fs-5" id="groceryModalLabel">Add Other Item</h2>
-          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      <div class="modal-header">
+        <h2 class="modal-title fs-5" id="groceryModalLabel">Add Other Item</h2>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="groceryAddModeWrap" class="mb-3">
+          <label class="form-label d-block">What do you want to do?</label>
+          <div class="btn-group w-100" role="group" aria-label="Item add mode">
+            <input type="radio" class="btn-check" name="groceryAddMode" id="groceryModeNew" value="new" checked>
+            <label class="btn btn-outline-secondary" for="groceryModeNew">New product</label>
+            <input type="radio" class="btn-check" name="groceryAddMode" id="groceryModeExisting" value="existing">
+            <label class="btn btn-outline-secondary" for="groceryModeExisting">Existing (add batch)</label>
+          </div>
         </div>
-        <div class="modal-body">
-          <input type="hidden" name="id" id="groceryProductId" value="">
-          <input type="hidden" name="product_type" value="GROCERY">
 
-          <p class="small text-muted">For egg, oil, and similar items. Stock and prices are tracked by unit (pc, L, ml).</p>
-
+        <div id="groceryExistingPanel" class="d-none">
+          <p class="small text-muted">
+            Same item, different buy price? Pick it, then stock a new batch on a purchase.
+          </p>
           <div class="mb-3">
-            <label for="groceryName" class="form-label">Item Name</label>
-            <input type="text" class="form-control" id="groceryName" name="name" required maxlength="100" placeholder="e.g. Egg">
+            <label for="groceryExistingSelect" class="form-label">Product</label>
+            <select class="form-select" id="groceryExistingSelect">
+              <option value="">Select item…</option>
+              <?php foreach ($allGroceryForDropdown as $gp): ?>
+                <option value="<?= (int) $gp['id'] ?>"><?= htmlspecialchars($gp['name']) ?></option>
+              <?php endforeach; ?>
+            </select>
           </div>
+          <a href="purchase_new.php" class="btn btn-outline-success w-100 disabled" id="groceryContinuePurchase" aria-disabled="true">
+            Continue to New Purchase
+          </a>
+        </div>
 
-          <div class="row g-3 mb-3">
-            <div class="col-md-6">
-              <label for="groceryCategory" class="form-label">Category</label>
-              <select class="form-select" id="groceryCategory" name="category" required>
-                <option value="">Select category</option>
-                <?php foreach ($groceryCategories as $cat): ?>
-                  <option value="<?= htmlspecialchars($cat['name']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
-                <?php endforeach; ?>
-              </select>
-            </div>
-            <div class="col-md-6">
-              <label for="groceryUnit" class="form-label">Unit</label>
-              <select class="form-select" id="groceryUnit" name="unit" required>
-                <option value="pc">pc (pieces)</option>
-                <option value="L">L (liters)</option>
-                <option value="ml">ml</option>
-              </select>
-            </div>
-          </div>
+        <form method="POST" action="/rice-business/backend/product_save.php" id="groceryForm">
+          <div id="groceryCatalogFields">
+            <input type="hidden" name="id" id="groceryProductId" value="">
+            <input type="hidden" name="product_type" value="GROCERY">
 
-          <div class="border rounded p-3 mb-3 bg-light">
-            <div class="fw-semibold mb-2">Stock and cost</div>
-            <div class="row g-3">
-              <div class="col-md-4">
-                <label for="groceryStock" class="form-label">Stock</label>
-                <input type="number" class="form-control" id="groceryStock" name="stock" step="0.01" min="0" value="0" required>
+            <p class="small text-muted" id="groceryCatalogHint">
+              Catalog only — stock comes from Purchases as batches.
+            </p>
+
+            <div class="mb-3" id="groceryStockReadonlyWrap" hidden>
+              <label class="form-label">Current stock</label>
+              <div class="form-control-plaintext" id="groceryStockReadonly">—</div>
+              <div class="form-text">Change stock by adding a batch on New Purchase.</div>
+            </div>
+
+            <div class="mb-3">
+              <label for="groceryName" class="form-label">Item Name</label>
+              <input type="text" class="form-control" id="groceryName" name="name" required maxlength="100" placeholder="e.g. Egg">
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label for="groceryCategory" class="form-label">Category</label>
+                <select class="form-select" id="groceryCategory" name="category" required>
+                  <option value="">Select category</option>
+                  <?php foreach ($groceryCategories as $cat): ?>
+                    <option value="<?= htmlspecialchars($cat['name']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
+                  <?php endforeach; ?>
+                </select>
               </div>
-              <div class="col-md-4">
-                <label for="groceryBuyingPrice" class="form-label">Buying price (₱)</label>
-                <input type="number" class="form-control" id="groceryBuyingPrice" name="buying_price" step="0.01" min="0" value="0" required>
+              <div class="col-md-6">
+                <label for="groceryUnit" class="form-label">Unit</label>
+                <select class="form-select" id="groceryUnit" name="unit" required>
+                  <option value="pc">pc (pieces)</option>
+                  <option value="L">L (liters)</option>
+                  <option value="ml">ml</option>
+                </select>
               </div>
-              <div class="col-md-4">
+            </div>
+
+            <div class="row g-3 mb-3">
+              <div class="col-md-6">
+                <label for="grocerySellingPrice" class="form-label" id="grocerySellingLabel">Selling price (₱)</label>
+                <input type="number" class="form-control" id="grocerySellingPrice" name="selling_price" step="0.01" min="0" required>
+              </div>
+              <div class="col-md-6">
                 <label for="groceryMinStock" class="form-label">Low stock alert</label>
                 <input type="number" class="form-control" id="groceryMinStock" name="minimum_stock" step="0.01" min="0" value="0" required>
+                <div class="form-text" id="groceryUnitHint">Use whole numbers when unit is pc.</div>
               </div>
             </div>
-            <div class="form-text" id="groceryUnitHint">Use whole numbers when unit is pc.</div>
-          </div>
 
-          <div class="row g-3 mb-3">
-            <div class="col-md-6">
-              <label for="grocerySellingPrice" class="form-label" id="grocerySellingLabel">Selling price (₱)</label>
-              <input type="number" class="form-control" id="grocerySellingPrice" name="selling_price" step="0.01" min="0" required>
-            </div>
-            <div class="col-md-6">
+            <div class="mb-0">
               <label for="groceryStatus" class="form-label">Status</label>
               <select class="form-select" id="groceryStatus" name="status">
                 <option value="active">Active</option>
@@ -478,12 +555,15 @@ require __DIR__ . '/includes/header.php';
               </select>
             </div>
           </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-          <button type="submit" class="btn btn-outline-success" id="grocerySubmitBtn">Save Item</button>
-        </div>
-      </form>
+          <div class="modal-footer px-0 pb-0" id="groceryFormFooter">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="submit" class="btn btn-outline-success" id="grocerySubmitBtn">Save Item</button>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer d-none" id="groceryExistingFooter">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+      </div>
     </div>
   </div>
 </div>
@@ -565,46 +645,62 @@ document.addEventListener('DOMContentLoaded', function () {
   const riceModal = bootstrap.Modal.getOrCreateInstance(riceModalEl);
   const groceryModal = bootstrap.Modal.getOrCreateInstance(groceryModalEl);
 
-  function formatMoney(value) {
-    return '₱' + Number(value).toLocaleString(undefined, {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2
-    });
-  }
-
-  function updateRiceSackSummary() {
-    const kgPerSack = parseFloat(document.getElementById('riceKgPerSack').value) || 0;
-    const sacks = parseFloat(document.getElementById('riceSacks').value) || 0;
-    const sackPrice = parseFloat(document.getElementById('riceSackPrice').value) || 0;
-    const stockKg = sacks * kgPerSack;
-    const buyPerKg = kgPerSack > 0 ? sackPrice / kgPerSack : 0;
-    document.getElementById('riceSackSummary').textContent =
-      'Stock: ' + stockKg.toFixed(2) + ' kg · Buy price: ' + formatMoney(buyPerKg) + ' / kg';
-
-    const idealHint = document.getElementById('riceIdealSellHint');
-    if (buyPerKg > 0) {
-      // ~20% over buy cost — matches typical rice margins in this app
-      const idealSell = Math.round(buyPerKg * 1.2 * 100) / 100;
-      idealHint.textContent =
-        'Ideal selling price: ' + formatMoney(idealSell) + ' / kg (~20% over buy)';
-    } else {
-      idealHint.textContent = 'Ideal: enter sack price to see a suggested sell price';
-    }
-  }
-
   function updateGroceryUnitUi() {
     const unit = document.getElementById('groceryUnit').value || 'pc';
-    const stock = document.getElementById('groceryStock');
     const minStock = document.getElementById('groceryMinStock');
     document.getElementById('grocerySellingLabel').textContent = 'Selling price (₱) per ' + unit;
     document.getElementById('groceryUnitHint').textContent =
       unit === 'pc' ? 'Use whole numbers when unit is pc.' : 'Decimals are allowed for ' + unit + '.';
-    if (unit === 'pc') {
-      stock.step = '1';
-      minStock.step = '1';
+    minStock.step = unit === 'pc' ? '1' : '0.01';
+  }
+
+  function setRiceAddMode(mode) {
+    const isExisting = mode === 'existing';
+    document.getElementById('riceExistingPanel').classList.toggle('d-none', !isExisting);
+    document.getElementById('riceCatalogFields').classList.toggle('d-none', isExisting);
+    document.getElementById('riceFormFooter').classList.toggle('d-none', isExisting);
+    document.getElementById('riceExistingFooter').classList.toggle('d-none', !isExisting);
+    document.getElementById('riceModeNew').checked = !isExisting;
+    document.getElementById('riceModeExisting').checked = isExisting;
+  }
+
+  function setGroceryAddMode(mode) {
+    const isExisting = mode === 'existing';
+    document.getElementById('groceryExistingPanel').classList.toggle('d-none', !isExisting);
+    document.getElementById('groceryCatalogFields').classList.toggle('d-none', isExisting);
+    document.getElementById('groceryFormFooter').classList.toggle('d-none', isExisting);
+    document.getElementById('groceryExistingFooter').classList.toggle('d-none', !isExisting);
+    document.getElementById('groceryModeNew').checked = !isExisting;
+    document.getElementById('groceryModeExisting').checked = isExisting;
+  }
+
+  function updateRiceContinueLink() {
+    const sel = document.getElementById('riceExistingSelect');
+    const link = document.getElementById('riceContinuePurchase');
+    const id = sel.value;
+    if (id) {
+      link.href = 'purchase_new.php?product_id=' + encodeURIComponent(id);
+      link.classList.remove('disabled');
+      link.removeAttribute('aria-disabled');
     } else {
-      stock.step = '0.01';
-      minStock.step = '0.01';
+      link.href = 'purchase_new.php';
+      link.classList.add('disabled');
+      link.setAttribute('aria-disabled', 'true');
+    }
+  }
+
+  function updateGroceryContinueLink() {
+    const sel = document.getElementById('groceryExistingSelect');
+    const link = document.getElementById('groceryContinuePurchase');
+    const id = sel.value;
+    if (id) {
+      link.href = 'purchase_new.php?product_id=' + encodeURIComponent(id);
+      link.classList.remove('disabled');
+      link.removeAttribute('aria-disabled');
+    } else {
+      link.href = 'purchase_new.php';
+      link.classList.add('disabled');
+      link.setAttribute('aria-disabled', 'true');
     }
   }
 
@@ -613,14 +709,17 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('riceName').value = '';
     document.getElementById('riceCategory').value = '';
     document.getElementById('riceKgPerSack').value = '25';
-    document.getElementById('riceSacks').value = '0';
-    document.getElementById('riceSackPrice').value = '0';
     document.getElementById('riceSellingPrice').value = '';
+    document.getElementById('riceSellingPriceSack').value = '';
     document.getElementById('riceMinSacks').value = '1';
     document.getElementById('riceStatus').value = 'active';
     document.getElementById('riceModalLabel').textContent = 'Add Rice';
     document.getElementById('riceSubmitBtn').textContent = 'Save Rice';
-    updateRiceSackSummary();
+    document.getElementById('riceAddModeWrap').classList.remove('d-none');
+    document.getElementById('riceStockReadonlyWrap').hidden = true;
+    document.getElementById('riceExistingSelect').value = '';
+    setRiceAddMode('new');
+    updateRiceContinueLink();
   }
 
   function resetGroceryForm() {
@@ -628,19 +727,33 @@ document.addEventListener('DOMContentLoaded', function () {
     document.getElementById('groceryName').value = '';
     document.getElementById('groceryCategory').value = '';
     document.getElementById('groceryUnit').value = 'pc';
-    document.getElementById('groceryStock').value = '0';
-    document.getElementById('groceryBuyingPrice').value = '0';
     document.getElementById('groceryMinStock').value = '0';
     document.getElementById('grocerySellingPrice').value = '';
     document.getElementById('groceryStatus').value = 'active';
     document.getElementById('groceryModalLabel').textContent = 'Add Other Item';
     document.getElementById('grocerySubmitBtn').textContent = 'Save Item';
+    document.getElementById('groceryAddModeWrap').classList.remove('d-none');
+    document.getElementById('groceryStockReadonlyWrap').hidden = true;
+    document.getElementById('groceryExistingSelect').value = '';
+    setGroceryAddMode('new');
+    updateGroceryContinueLink();
     updateGroceryUnitUi();
   }
 
-  document.querySelectorAll('.rice-sack-calc').forEach(function (input) {
-    input.addEventListener('input', updateRiceSackSummary);
+  document.getElementById('riceModeNew').addEventListener('change', function () {
+    if (this.checked) setRiceAddMode('new');
   });
+  document.getElementById('riceModeExisting').addEventListener('change', function () {
+    if (this.checked) setRiceAddMode('existing');
+  });
+  document.getElementById('groceryModeNew').addEventListener('change', function () {
+    if (this.checked) setGroceryAddMode('new');
+  });
+  document.getElementById('groceryModeExisting').addEventListener('change', function () {
+    if (this.checked) setGroceryAddMode('existing');
+  });
+  document.getElementById('riceExistingSelect').addEventListener('change', updateRiceContinueLink);
+  document.getElementById('groceryExistingSelect').addEventListener('change', updateGroceryContinueLink);
   document.getElementById('groceryUnit').addEventListener('change', updateGroceryUnitUi);
 
   document.getElementById('btnAddRice').addEventListener('click', resetRiceForm);
@@ -654,27 +767,38 @@ document.addEventListener('DOMContentLoaded', function () {
         document.getElementById('riceName').value = btn.dataset.name;
         document.getElementById('riceCategory').value = btn.dataset.category;
         document.getElementById('riceKgPerSack').value = btn.dataset.kgPerSack;
-        document.getElementById('riceSacks').value = btn.dataset.sacks;
-        document.getElementById('riceSackPrice').value = btn.dataset.sackPrice;
         document.getElementById('riceSellingPrice').value = btn.dataset.sellingPrice;
+        document.getElementById('riceSellingPriceSack').value = btn.dataset.sellingPriceSack || '';
         document.getElementById('riceMinSacks').value = btn.dataset.minSacks;
         document.getElementById('riceStatus').value = btn.dataset.status;
         document.getElementById('riceModalLabel').textContent = 'Edit Rice';
         document.getElementById('riceSubmitBtn').textContent = 'Update Rice';
-        updateRiceSackSummary();
+        document.getElementById('riceAddModeWrap').classList.add('d-none');
+        setRiceAddMode('new');
+        const stockKg = parseFloat(btn.dataset.stock) || 0;
+        const sacks = parseFloat(btn.dataset.sacks) || 0;
+        document.getElementById('riceStockReadonly').textContent =
+          sacks.toFixed(2) + ' sack (' + stockKg.toFixed(2) + ' kg)';
+        document.getElementById('riceStockReadonlyWrap').hidden = false;
         riceModal.show();
       } else {
         document.getElementById('groceryProductId').value = btn.dataset.id;
         document.getElementById('groceryName').value = btn.dataset.name;
         document.getElementById('groceryCategory').value = btn.dataset.category;
         document.getElementById('groceryUnit').value = btn.dataset.unit || 'pc';
-        document.getElementById('groceryStock').value = btn.dataset.stock || '0';
-        document.getElementById('groceryBuyingPrice').value = btn.dataset.buyingPrice || '0';
         document.getElementById('groceryMinStock').value = btn.dataset.minStock || '0';
         document.getElementById('grocerySellingPrice').value = btn.dataset.sellingPrice;
         document.getElementById('groceryStatus').value = btn.dataset.status;
         document.getElementById('groceryModalLabel').textContent = 'Edit Other Item';
         document.getElementById('grocerySubmitBtn').textContent = 'Update Item';
+        document.getElementById('groceryAddModeWrap').classList.add('d-none');
+        setGroceryAddMode('new');
+        const unit = btn.dataset.unit || 'pc';
+        const stock = parseFloat(btn.dataset.stock) || 0;
+        const decimals = unit === 'pc' ? 0 : 2;
+        document.getElementById('groceryStockReadonly').textContent =
+          stock.toFixed(decimals) + ' ' + unit;
+        document.getElementById('groceryStockReadonlyWrap').hidden = false;
         updateGroceryUnitUi();
         groceryModal.show();
       }
@@ -683,7 +807,6 @@ document.addEventListener('DOMContentLoaded', function () {
 
   riceModalEl.addEventListener('hidden.bs.modal', resetRiceForm);
   groceryModalEl.addEventListener('hidden.bs.modal', resetGroceryForm);
-  updateRiceSackSummary();
   updateGroceryUnitUi();
 });
 </script>

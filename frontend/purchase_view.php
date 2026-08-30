@@ -75,7 +75,7 @@ require __DIR__ . '/includes/header.php';
     <p class="text-muted mb-0">Stock-in details</p>
   </div>
   <div class="d-flex gap-2">
-    <a href="purchase_edit.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-outline-primary">Edit</a>
+    <a href="purchase_new.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-outline-primary">Edit</a>
     <form
       method="POST"
       action="/rice-business/backend/purchase_delete.php"

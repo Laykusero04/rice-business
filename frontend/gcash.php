@@ -205,7 +205,7 @@ require __DIR__ . '/includes/header.php';
             </td>
             <td class="text-end text-nowrap">
               <a href="gcash_view.php?id=<?= (int) $row['id'] ?>" class="btn btn-sm btn-outline-primary">View</a>
-              <a href="gcash_edit.php?id=<?= (int) $row['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
+              <a href="gcash_new.php?id=<?= (int) $row['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
             </td>
           </tr>
         <?php endforeach; ?>

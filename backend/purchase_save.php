@@ -15,7 +15,7 @@ $purchaseId = (int) ($_POST['id'] ?? 0);
 $isEdit = $purchaseId > 0;
 
 $redirectNew = $isEdit
-    ? '/rice-business/frontend/purchase_edit.php?id=' . $purchaseId
+    ? '/rice-business/frontend/purchase_new.php?id=' . $purchaseId
     : '/rice-business/frontend/purchase_new.php';
 
 $supplierId = (int) ($_POST['supplier_id'] ?? 0);
@@ -26,6 +26,8 @@ $productIds = $_POST['product_id'] ?? [];
 $qtyList = $_POST['quantity'] ?? [];
 $unitPrices = $_POST['unit_price'] ?? [];
 $batchLabels = $_POST['batch_label'] ?? [];
+$millNames = $_POST['mill_name'] ?? [];
+$weighedKgs = $_POST['weighed_kg'] ?? [];
 
 if ($supplierId <= 0 || $purchaseDate === '') {
     header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=required');
@@ -108,6 +110,9 @@ try {
         $qty = (float) ($qtyList[$i] ?? 0);
         $unitPrice = (float) ($unitPrices[$i] ?? 0);
         $batchLabel = trim((string) ($batchLabels[$i] ?? ''));
+        $millName = trim((string) ($millNames[$i] ?? ''));
+        $weighedRaw = trim((string) ($weighedKgs[$i] ?? ''));
+        $weighedKg = $weighedRaw !== '' ? (float) $weighedRaw : null;
 
         if ($productId <= 0 || $qty <= 0 || $unitPrice < 0) {
             continue;
@@ -136,6 +141,10 @@ try {
             $quantityStock = round($qty * $kgPerSack, 2);
             $buyingPriceStored = round($unitPrice / $kgPerSack, 2);
             $subtotal = round($qty * $unitPrice, 2);
+            if ($weighedKg !== null && $weighedKg > 0) {
+                $quantityStock = round($weighedKg, 2);
+                $buyingPriceStored = round($subtotal / $quantityStock, 2);
+            }
         } else {
             if ($unit === 'pc') {
                 $isWhole = abs($qty - round($qty)) < 0.0001;
@@ -159,6 +168,9 @@ try {
             'buying_price' => $buyingPriceStored,
             'subtotal' => $subtotal,
             'batch_label' => $batchLabel !== '' ? $batchLabel : null,
+            'mill_name' => $millName !== '' ? $millName : null,
+            'weighed_kg' => ($weighedKg !== null && $weighedKg > 0) ? round($weighedKg, 2) : null,
+            'total_cost' => $subtotal,
         ];
         $total += $subtotal;
     }
@@ -275,7 +287,13 @@ try {
             (float) $item['buying_price'],
             $purchaseDate,
             $purchaseItemId,
-            $item['batch_label'] ?? ('Purchase #' . $purchaseId)
+            $item['batch_label'] ?? ('Purchase #' . $purchaseId),
+            [
+                'total_cost' => (float) $item['total_cost'],
+                'weighed_kg' => $item['weighed_kg'] ?? null,
+                'mill_name' => $item['mill_name'] ?? null,
+                'lot_kind' => 'purchase',
+            ]
         );
 
         $stockStmt->execute([

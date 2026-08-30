@@ -88,7 +88,7 @@ require __DIR__ . '/includes/header.php';
     </p>
   </div>
   <div class="d-flex flex-wrap gap-2">
-    <a href="sale_edit.php?id=<?= (int) $sale['id'] ?>" class="btn btn-outline-secondary">Edit</a>
+    <a href="sale_new.php?id=<?= (int) $sale['id'] ?>" class="btn btn-outline-secondary">Edit</a>
     <form
       method="POST"
       action="/rice-business/backend/sale_delete.php"
@@ -206,9 +206,14 @@ require __DIR__ . '/includes/header.php';
         <th class="text-end">Sell price</th>
         <th class="text-end">Cost</th>
         <th class="text-end">Subtotal</th>
+        <th class="text-end">Profit</th>
       </tr>
     </thead>
     <tbody>
+      <?php
+        $saleCogs = 0.0;
+        $saleGp = 0.0;
+      ?>
       <?php foreach ($items as $item): ?>
         <?php
           $unit = $item['unit'] ?? 'kg';
@@ -220,6 +225,12 @@ require __DIR__ . '/includes/header.php';
           $cost = $item['cost_price'] !== null
               ? (float) $item['cost_price']
               : (float) ($item['lot_buying_price'] ?? 0);
+          $lineQty = (float) $item['quantity'];
+          $lineSubtotal = (float) $item['subtotal'];
+          $lineCogs = round($lineQty * $cost, 2);
+          $lineGp = round($lineSubtotal - $lineCogs, 2);
+          $saleCogs += $lineCogs;
+          $saleGp += $lineGp;
           if ($productType === 'RICE' && $cost > 0) {
               $costLabel = '₱' . number_format($cost * $kgPerSack, 2) . '/sack';
           } elseif ($cost > 0) {
@@ -244,19 +255,32 @@ require __DIR__ . '/includes/header.php';
           <td class="fw-semibold"><?= htmlspecialchars($item['product_name']) ?></td>
           <td class="small"><?= $batchLabel ?><div class="text-muted"><?= htmlspecialchars($costLabel) ?></div></td>
           <td class="text-end">
-            <?= number_format((float) $item['quantity'], $unit === 'pc' ? 0 : 2) ?>
+            <?= number_format($lineQty, $unit === 'pc' ? 0 : 2) ?>
             <?= htmlspecialchars($unit) ?>
           </td>
           <td class="text-end">₱<?= number_format((float) $item['price'], 2) ?></td>
           <td class="text-end"><?= htmlspecialchars($costLabel) ?></td>
-          <td class="text-end">₱<?= number_format((float) $item['subtotal'], 2) ?></td>
+          <td class="text-end">₱<?= number_format($lineSubtotal, 2) ?></td>
+          <td class="text-end fw-semibold <?= $lineGp >= 0 ? 'text-success' : 'text-danger' ?>">
+            ₱<?= number_format($lineGp, 2) ?>
+          </td>
         </tr>
       <?php endforeach; ?>
     </tbody>
     <tfoot>
       <tr>
+        <td colspan="5" class="text-end fw-semibold">COGS</td>
+        <td colspan="2" class="text-end">₱<?= number_format($saleCogs, 2) ?></td>
+      </tr>
+      <tr>
+        <td colspan="5" class="text-end fw-semibold">Gross profit</td>
+        <td colspan="2" class="text-end fw-bold <?= $saleGp >= 0 ? 'text-success' : 'text-danger' ?>">
+          ₱<?= number_format($saleGp, 2) ?>
+        </td>
+      </tr>
+      <tr>
         <td colspan="5" class="text-end fw-semibold">Total</td>
-        <td class="text-end fw-bold">₱<?= number_format($total, 2) ?></td>
+        <td colspan="2" class="text-end fw-bold">₱<?= number_format($total, 2) ?></td>
       </tr>
     </tfoot>
   </table>

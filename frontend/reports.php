@@ -6,11 +6,17 @@ require_once __DIR__ . '/../backend/conn.php';
 requireLogin();
 
 $user = currentUser();
-$pageTitle = 'Reports';
 $activePage = 'reports';
 
 $from = trim($_GET['from'] ?? date('Y-m-01'));
 $to = trim($_GET['to'] ?? date('Y-m-d'));
+$tab = trim($_GET['tab'] ?? 'period');
+if (!in_array($tab, ['period', 'batch'], true)) {
+    $tab = 'period';
+}
+
+$statusFilter = trim($_GET['status'] ?? 'all');
+$kindFilter = trim($_GET['kind'] ?? 'all');
 
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
     $from = date('Y-m-01');
@@ -18,6 +24,8 @@ if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $from)) {
 if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $to)) {
     $to = date('Y-m-d');
 }
+
+$pageTitle = $tab === 'batch' ? 'Reports — By lot / batch' : 'Reports';
 
 $todayForPresets = date('Y-m-d');
 $earliestAll = $pdo->query(
@@ -62,6 +70,41 @@ foreach ($datePresets as $key => $preset) {
     }
 }
 
+$batchRows = [];
+$totalInvested = 0.0;
+$totalBatchRevenue = 0.0;
+$totalBatchCogs = 0.0;
+$totalBatchGp = 0.0;
+$totalShrink = 0.0;
+$totalRemaining = 0.0;
+
+if ($tab === 'batch') {
+    require_once __DIR__ . '/../backend/batch_profit.php';
+    $batchRows = fetchBatchProfitRows($pdo, $from, $to);
+
+    if ($statusFilter !== 'all') {
+        $batchRows = array_values(array_filter($batchRows, static function ($row) use ($statusFilter) {
+            return strcasecmp((string) $row['status'], $statusFilter) === 0;
+        }));
+    }
+
+    if ($kindFilter === 'source') {
+        $batchRows = array_values(array_filter($batchRows, static fn ($row) => empty($row['is_mix'])));
+    } elseif ($kindFilter === 'mix') {
+        $batchRows = array_values(array_filter($batchRows, static fn ($row) => !empty($row['is_mix'])));
+    }
+
+    foreach ($batchRows as $row) {
+        if (empty($row['is_mix'])) {
+            $totalInvested += (float) $row['invested'];
+        }
+        $totalBatchRevenue += (float) $row['sold_revenue'];
+        $totalBatchCogs += (float) $row['sold_cost'];
+        $totalBatchGp += (float) $row['realized_gp'];
+        $totalShrink += (float) $row['shrink_cost'];
+        $totalRemaining += (float) $row['remaining_value'];
+    }
+} else {
 $salesTotalStmt = $pdo->prepare(
     'SELECT COALESCE(SUM(total), 0) FROM sales WHERE sale_date BETWEEN ? AND ?'
 );
@@ -101,6 +144,9 @@ $cogsTotal = (float) $cogsStmt->fetchColumn();
 $grossProfit = $salesTotal - $cogsTotal;
 $grossMargin = $salesTotal > 0 ? ($grossProfit / $salesTotal) * 100 : 0.0;
 
+require_once __DIR__ . '/../backend/batch_profit.php';
+$inventoryLossTotal = fetchInventoryLossTotal($pdo, $from, $to);
+
 $gcashFeeIncome = 0.0;
 $gcashCashinCount = 0;
 try {
@@ -117,7 +163,7 @@ try {
     // Table may not exist until migration is run
 }
 
-$netIncome = $salesTotal + $gcashFeeIncome - $cogsTotal - $expenseTotal;
+$netIncome = $salesTotal + $gcashFeeIncome - $cogsTotal - $expenseTotal - $inventoryLossTotal;
 
 $saleCountStmt = $pdo->prepare(
     'SELECT COUNT(*) FROM sales WHERE sale_date BETWEEN ? AND ?'
@@ -424,7 +470,18 @@ foreach ($dailyNetIncome as $row) {
     }
 }
 
+}
+
 $exportBase = '/rice-business/backend/report_export.php?from=' . urlencode($from) . '&to=' . urlencode($to);
+$dateQs = 'from=' . urlencode($from) . '&to=' . urlencode($to);
+$tabQs = $tab === 'batch' ? '&tab=batch' : '';
+$batchFilterQs = '';
+if ($statusFilter !== 'all') {
+    $batchFilterQs .= '&status=' . urlencode($statusFilter);
+}
+if ($kindFilter !== 'all') {
+    $batchFilterQs .= '&kind=' . urlencode($kindFilter);
+}
 
 require __DIR__ . '/includes/header.php';
 ?>
@@ -432,7 +489,14 @@ require __DIR__ . '/includes/header.php';
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4 no-print">
   <div>
     <h1 class="h3 mb-1">Reports</h1>
-    <p class="text-muted mb-0">Sales, COGS, gross profit, expenses, and inventory overview.</p>
+    <p class="text-muted mb-0">
+      <?php if ($tab === 'batch'): ?>
+        Profit by delivery / mix batch (pesos). Sales in range; invested &amp; remaining are lifetime for each batch.
+        Mix sales are attributed back to source batches by cost share.
+      <?php else: ?>
+        Sales, COGS, gross profit, batch shrink, expenses, and inventory overview.
+      <?php endif; ?>
+    </p>
   </div>
   <div class="d-flex flex-wrap gap-2">
     <a href="analytics.php?from=<?= urlencode($from) ?>&to=<?= urlencode($to) ?>" class="btn btn-outline-secondary">
@@ -446,10 +510,17 @@ require __DIR__ . '/includes/header.php';
         <i class="bi bi-download"></i> Export Excel (CSV)
       </button>
       <ul class="dropdown-menu dropdown-menu-end">
+        <?php if ($tab === 'batch'): ?>
+          <li><a class="dropdown-item" href="<?= $exportBase ?>&type=batch_profit">By lot / batch</a></li>
+          <li><hr class="dropdown-divider"></li>
+        <?php endif; ?>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=summary">Summary</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=gross_profit">Gross Profit</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=net_income">Net Income</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=profit_by_variety">Profit by Variety</a></li>
+        <?php if ($tab !== 'batch'): ?>
+          <li><a class="dropdown-item" href="<?= $exportBase ?>&type=batch_profit">By lot / batch</a></li>
+        <?php endif; ?>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=sales">Sales</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=expenses">Expenses</a></li>
         <li><a class="dropdown-item" href="<?= $exportBase ?>&type=top_products">Top Selling Rice</a></li>
@@ -461,16 +532,48 @@ require __DIR__ . '/includes/header.php';
   </div>
 </div>
 
+<ul class="nav nav-tabs mb-3 no-print">
+  <li class="nav-item">
+    <a class="nav-link <?= $tab === 'period' ? 'active' : '' ?>" href="reports.php?<?= $dateQs ?>">Period</a>
+  </li>
+  <li class="nav-item">
+    <a class="nav-link <?= $tab === 'batch' ? 'active' : '' ?>" href="reports.php?tab=batch&amp;<?= $dateQs ?>">By lot / batch</a>
+  </li>
+</ul>
+
 <form class="row g-2 mb-2 no-print" method="GET" action="reports.php">
-  <div class="col-md-4">
+  <?php if ($tab === 'batch'): ?>
+    <input type="hidden" name="tab" value="batch">
+  <?php endif; ?>
+  <div class="<?= $tab === 'batch' ? 'col-md-3' : 'col-md-4' ?>">
     <label class="form-label small mb-1">From</label>
     <input type="date" name="from" class="form-control" value="<?= htmlspecialchars($from) ?>">
   </div>
-  <div class="col-md-4">
+  <div class="<?= $tab === 'batch' ? 'col-md-3' : 'col-md-4' ?>">
     <label class="form-label small mb-1">To</label>
     <input type="date" name="to" class="form-control" value="<?= htmlspecialchars($to) ?>">
   </div>
-  <div class="col-md-4 d-flex align-items-end">
+  <?php if ($tab === 'batch'): ?>
+    <div class="col-md-2">
+      <label class="form-label small mb-1">Status</label>
+      <select name="status" class="form-select">
+        <?php foreach (['all' => 'All', 'Open' => 'Open', 'Low' => 'Low', 'Closed' => 'Closed', 'Crumb' => 'Crumb'] as $val => $label): ?>
+          <option value="<?= htmlspecialchars($val) ?>" <?= $statusFilter === $val ? 'selected' : '' ?>>
+            <?= htmlspecialchars($label) ?>
+          </option>
+        <?php endforeach; ?>
+      </select>
+    </div>
+    <div class="col-md-2">
+      <label class="form-label small mb-1">Kind</label>
+      <select name="kind" class="form-select">
+        <option value="all" <?= $kindFilter === 'all' ? 'selected' : '' ?>>All</option>
+        <option value="source" <?= $kindFilter === 'source' ? 'selected' : '' ?>>Source only</option>
+        <option value="mix" <?= $kindFilter === 'mix' ? 'selected' : '' ?>>Mix only</option>
+      </select>
+    </div>
+  <?php endif; ?>
+  <div class="<?= $tab === 'batch' ? 'col-md-2' : 'col-md-4' ?> d-flex align-items-end">
     <button type="submit" class="btn btn-outline-secondary w-100">Apply</button>
   </div>
 </form>
@@ -478,7 +581,7 @@ require __DIR__ . '/includes/header.php';
   <span class="small text-muted">Quick:</span>
   <div class="btn-group btn-group-sm" role="group" aria-label="Date range presets">
     <?php foreach ($datePresets as $key => $preset): ?>
-      <a href="reports.php?from=<?= urlencode($preset['from']) ?>&to=<?= urlencode($preset['to']) ?>"
+      <a href="reports.php?from=<?= urlencode($preset['from']) ?>&amp;to=<?= urlencode($preset['to']) ?><?= htmlspecialchars($tabQs . ($tab === 'batch' ? $batchFilterQs : '')) ?>"
          class="btn btn-outline-secondary<?= $activeDatePreset === $key ? ' active' : '' ?>">
         <?= htmlspecialchars($preset['label']) ?>
       </a>
@@ -490,6 +593,121 @@ require __DIR__ . '/includes/header.php';
   Showing <?= htmlspecialchars($from) ?> to <?= htmlspecialchars($to) ?>
 </p>
 
+<?php if ($tab === 'batch'): ?>
+<div class="row g-3 mb-4">
+  <div class="col-md-2">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Invested (source)</div>
+      <div class="fs-5 fw-bold">₱<?= number_format($totalInvested, 2) ?></div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Sold revenue</div>
+      <div class="fs-5 fw-bold text-success">₱<?= number_format($totalBatchRevenue, 2) ?></div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Sold cost</div>
+      <div class="fs-5 fw-bold">₱<?= number_format($totalBatchCogs, 2) ?></div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Realized GP</div>
+      <div class="fs-5 fw-bold <?= $totalBatchGp >= 0 ? 'text-success' : 'text-danger' ?>">
+        ₱<?= number_format($totalBatchGp, 2) ?>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Shrink loss</div>
+      <div class="fs-5 fw-bold text-danger">₱<?= number_format($totalShrink, 2) ?></div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Remaining value</div>
+      <div class="fs-5 fw-bold">₱<?= number_format($totalRemaining, 2) ?></div>
+    </div>
+  </div>
+</div>
+
+<div class="table-responsive bg-white rounded shadow-sm">
+  <table class="table table-sm table-hover align-middle mb-0">
+    <thead class="table-light">
+      <tr>
+        <th>Batch</th>
+        <th>Product</th>
+        <th>Supplier</th>
+        <th>Date</th>
+        <th class="text-end">Invested</th>
+        <th class="text-end">Sold ₱</th>
+        <th class="text-end">Sold cost</th>
+        <th class="text-end">GP</th>
+        <th class="text-end">Shrink</th>
+        <th class="text-end">Net</th>
+        <th class="text-end">Left</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <?php if (count($batchRows) === 0): ?>
+        <tr>
+          <td colspan="12" class="text-center text-muted py-4">No batches found for this filter.</td>
+        </tr>
+      <?php else: ?>
+        <?php foreach ($batchRows as $row): ?>
+          <?php
+            $unit = $row['unit'] ?? 'kg';
+            $statusClass = match ($row['status']) {
+                'Closed' => 'text-bg-secondary',
+                'Low' => 'text-bg-warning',
+                'Crumb' => 'text-bg-dark',
+                default => 'text-bg-success',
+            };
+          ?>
+          <tr>
+            <td>
+              <div class="fw-semibold">
+                <?php if (!empty($row['is_mix'])): ?>
+                  <span class="badge text-bg-info me-1">MIX</span>
+                <?php endif; ?>
+                <?= htmlspecialchars($row['batch_label']) ?>
+              </div>
+              <?php if (!empty($row['mill_name'])): ?>
+                <div class="small text-muted"><?= htmlspecialchars($row['mill_name']) ?></div>
+              <?php endif; ?>
+              <div class="small text-muted">#<?= (int) $row['id'] ?></div>
+            </td>
+            <td><?= htmlspecialchars($row['product_name']) ?></td>
+            <td class="small"><?= htmlspecialchars($row['supplier_name'] ?? '—') ?></td>
+            <td class="small"><?= htmlspecialchars($row['purchased_at']) ?></td>
+            <td class="text-end">₱<?= number_format((float) $row['invested'], 2) ?></td>
+            <td class="text-end">₱<?= number_format((float) $row['sold_revenue'], 2) ?></td>
+            <td class="text-end">₱<?= number_format((float) $row['sold_cost'], 2) ?></td>
+            <td class="text-end fw-semibold <?= (float) $row['realized_gp'] >= 0 ? 'text-success' : 'text-danger' ?>">
+              ₱<?= number_format((float) $row['realized_gp'], 2) ?>
+              <div class="small text-muted"><?= number_format((float) $row['gp_pct'], 1) ?>%</div>
+            </td>
+            <td class="text-end text-danger">₱<?= number_format((float) $row['shrink_cost'], 2) ?></td>
+            <td class="text-end fw-semibold <?= (float) $row['net_after_shrink'] >= 0 ? 'text-success' : 'text-danger' ?>">
+              ₱<?= number_format((float) $row['net_after_shrink'], 2) ?>
+            </td>
+            <td class="text-end">
+              <?= number_format((float) $row['remaining'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>
+              <div class="small text-muted">₱<?= number_format((float) $row['remaining_value'], 2) ?></div>
+            </td>
+            <td><span class="badge <?= $statusClass ?>"><?= htmlspecialchars($row['status']) ?></span></td>
+          </tr>
+        <?php endforeach; ?>
+      <?php endif; ?>
+    </tbody>
+  </table>
+</div>
+<?php else: ?>
 <div class="row g-3 mb-4">
   <div class="col-md-3">
     <div class="bg-white rounded shadow-sm p-3 h-100">
@@ -556,11 +774,18 @@ require __DIR__ . '/includes/header.php';
   </div>
   <div class="col-md-3">
     <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Inventory shrink (write-off / close)</div>
+      <div class="fs-5 fw-bold text-danger">₱<?= number_format($inventoryLossTotal, 2) ?></div>
+      <div class="small text-muted">Batch leftover cost in this period</div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
       <div class="text-muted small">Net Income</div>
       <div class="fs-5 fw-bold <?= $netIncome >= 0 ? 'text-success' : 'text-danger' ?>">
         ₱<?= number_format($netIncome, 2) ?>
       </div>
-      <div class="small text-muted">Sales + GCash fees − COGS − Expenses</div>
+      <div class="small text-muted">Sales + GCash fees − COGS − Expenses − Shrink</div>
     </div>
   </div>
   <div class="col-md-3">
@@ -581,7 +806,7 @@ require __DIR__ . '/includes/header.php';
     <div class="bg-white rounded shadow-sm p-3">
       <h2 class="h6 mb-1">Daily Net Income</h2>
       <p class="small text-muted mb-3">
-        Sales − COGS + GCash fees − Expenses
+        Sales − COGS + GCash fees − Expenses (shrink is shown on the summary cards for the whole period)
       </p>
       <div class="row g-3 mb-3">
         <div class="col-md-6">
@@ -1069,6 +1294,7 @@ require __DIR__ . '/includes/header.php';
     </div>
   </div>
 </div>
+<?php endif; ?>
 
 <style>
 @media print {

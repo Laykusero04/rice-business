@@ -40,15 +40,20 @@ try {
         throw new RuntimeException('invalid');
     }
 
-    // Prefer WRITEOFF-{lotId}-{timestamp} ; fall back to "batch #N" in notes
+    $isWriteoffLike = str_starts_with($reference, 'WRITEOFF') || str_starts_with($reference, 'CLOSE');
+    if (!$isWriteoffLike) {
+        throw new RuntimeException('not_undoable');
+    }
+
+    // Prefer WRITEOFF|CLOSE-{lotId}-{timestamp} ; fall back to "batch #N" in notes
     $lotId = 0;
-    if (preg_match('/^WRITEOFF-(\d+)-\d{8,}/', $reference, $m)) {
+    if (preg_match('/^(?:WRITEOFF|CLOSE)-(\d+)-\d{8,}/', $reference, $m)) {
         $lotId = (int) $m[1];
     } elseif (preg_match('/batch\s*#\s*(\d+)/i', $notes, $m)) {
         $lotId = (int) $m[1];
     }
 
-    if ($lotId <= 0 || !str_starts_with($reference, 'WRITEOFF')) {
+    if ($lotId <= 0) {
         throw new RuntimeException('not_undoable');
     }
 
@@ -64,6 +69,10 @@ try {
 
     $pdo->prepare('UPDATE products SET stock = stock + ? WHERE id = ?')
         ->execute([$qty, $productId]);
+
+    $pdo->prepare(
+        'DELETE FROM stock_lot_writeoffs WHERE movement_reference = ?'
+    )->execute([$reference]);
 
     $pdo->prepare('DELETE FROM stock_movements WHERE id = ?')->execute([$movementId]);
 

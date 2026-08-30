@@ -15,7 +15,7 @@ $saleId = (int) ($_POST['id'] ?? 0);
 $isEdit = $saleId > 0;
 
 $redirectNew = $isEdit
-    ? '/rice-business/frontend/sale_edit.php?id=' . $saleId
+    ? '/rice-business/frontend/sale_new.php?id=' . $saleId
     : '/rice-business/frontend/sale_new.php';
 
 $customerId = (int) ($_POST['customer_id'] ?? 0);

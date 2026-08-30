@@ -5,10 +5,28 @@ require_once __DIR__ . '/../backend/gcash_fees.php';
 requireLogin();
 
 $user = currentUser();
-$pageTitle = 'New GCash Transaction';
-$activePage = 'gcash-new';
 
-$defaultType = normalizeGcashTxnType($_GET['type'] ?? 'cash_in');
+$id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+$isEdit = $id > 0;
+$row = null;
+
+if ($isEdit) {
+    $stmt = $pdo->prepare('SELECT * FROM gcash_cashins WHERE id = ? LIMIT 1');
+    $stmt->execute([$id]);
+    $row = $stmt->fetch();
+
+    if (!$row) {
+        header('Location: /rice-business/frontend/gcash.php?error=notfound');
+        exit;
+    }
+
+    $defaultType = normalizeGcashTxnType($row['txn_type'] ?? 'cash_in');
+} else {
+    $defaultType = normalizeGcashTxnType($_GET['type'] ?? 'cash_in');
+}
+
+$pageTitle = $isEdit ? 'Edit GCash Transaction' : 'New GCash Transaction';
+$activePage = $isEdit ? 'gcash-history' : 'gcash-new';
 
 $tiers = fetchGcashFeeTiers($pdo);
 $tiersJs = gcashFeeTiersForJs($pdo);
@@ -18,23 +36,36 @@ $flashType = 'danger';
 if (isset($_GET['error'])) {
     $flash = match ($_GET['error']) {
         'invalid' => 'Enter a valid amount, fee (0 or more), and date.',
-        'save' => 'Could not save. Try again.',
+        'save' => $isEdit ? 'Could not update. Try again.' : 'Could not save. Try again.',
         default => 'Something went wrong.',
     };
 }
+
+$amountVal = $isEdit ? number_format((float) $row['cashin_amount'], 2, '.', '') : '';
+$feeVal = $isEdit ? number_format((float) $row['fee_charged'], 2, '.', '') : '0';
+$dateVal = $isEdit ? (string) $row['cashin_date'] : date('Y-m-d');
+$customerNameVal = $isEdit ? (string) ($row['customer_name'] ?? '') : '';
+$gcashNumberVal = $isEdit ? (string) ($row['gcash_number'] ?? '') : '';
+$referenceNoVal = $isEdit ? (string) ($row['reference_no'] ?? '') : '';
+$notesVal = $isEdit ? (string) ($row['notes'] ?? '') : '';
 
 require __DIR__ . '/includes/header.php';
 ?>
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
-    <h1 class="h3 mb-1">New GCash Transaction</h1>
+    <h1 class="h3 mb-1"><?= $isEdit ? 'Edit #' . (int) $row['id'] : 'New GCash Transaction' ?></h1>
     <p class="text-muted mb-0">
       <strong>Cash-in</strong> = customer gives you cash, you load their GCash.
       <strong>Cash-out</strong> = you give them cash, money leaves their GCash.
     </p>
   </div>
-  <a href="gcash.php" class="btn btn-outline-secondary">History</a>
+  <div class="d-flex gap-2">
+    <?php if ($isEdit): ?>
+      <a href="gcash_view.php?id=<?= (int) $row['id'] ?>" class="btn btn-outline-secondary">View</a>
+    <?php endif; ?>
+    <a href="gcash.php" class="btn btn-outline-secondary">History</a>
+  </div>
 </div>
 
 <?php if ($flash !== ''): ?>
@@ -47,6 +78,10 @@ require __DIR__ . '/includes/header.php';
 <div class="row g-4">
   <div class="col-lg-7">
     <form method="POST" action="/rice-business/backend/gcash_cashin_save.php" class="bg-white rounded shadow-sm p-3 p-md-4" id="gcashForm">
+      <?php if ($isEdit): ?>
+        <input type="hidden" name="id" value="<?= (int) $row['id'] ?>">
+      <?php endif; ?>
+
       <div class="mb-3">
         <label class="form-label d-block">Type</label>
         <div class="btn-group w-100" role="group" aria-label="Transaction type">
@@ -64,12 +99,22 @@ require __DIR__ . '/includes/header.php';
       <div class="row g-3 mb-3">
         <div class="col-md-6">
           <label for="cashinAmount" class="form-label" id="amountLabel">Amount (₱)</label>
-          <input type="number" class="form-control" id="cashinAmount" name="cashin_amount" step="0.01" min="0.01" required placeholder="e.g. 1000">
+          <input
+            type="number"
+            class="form-control"
+            id="cashinAmount"
+            name="cashin_amount"
+            step="0.01"
+            min="0.01"
+            required
+            placeholder="e.g. 1000"
+            <?php if ($amountVal !== ''): ?>value="<?= htmlspecialchars($amountVal) ?>"<?php endif; ?>
+          >
           <div class="form-text" id="amountHint">Amount loaded to their GCash</div>
         </div>
         <div class="col-md-6">
           <label for="cashinDate" class="form-label">Date</label>
-          <input type="date" class="form-control" id="cashinDate" name="cashin_date" value="<?= date('Y-m-d') ?>" required>
+          <input type="date" class="form-control" id="cashinDate" name="cashin_date" value="<?= htmlspecialchars($dateVal) ?>" required>
         </div>
       </div>
 
@@ -81,7 +126,7 @@ require __DIR__ . '/includes/header.php';
         </div>
         <div class="col-md-4">
           <label for="feeCharged" class="form-label">Fee to charge (₱)</label>
-          <input type="number" class="form-control" id="feeCharged" name="fee_charged" step="0.01" min="0" value="0" required>
+          <input type="number" class="form-control" id="feeCharged" name="fee_charged" step="0.01" min="0" value="<?= htmlspecialchars($feeVal) ?>" required>
           <div class="form-text">Lower or raise for this customer</div>
         </div>
         <div class="col-md-4">
@@ -97,25 +142,29 @@ require __DIR__ . '/includes/header.php';
       <div class="row g-3 mb-3">
         <div class="col-md-6">
           <label for="customerName" class="form-label">Customer name</label>
-          <input type="text" class="form-control" id="customerName" name="customer_name" maxlength="100" placeholder="Optional">
+          <input type="text" class="form-control" id="customerName" name="customer_name" maxlength="100" placeholder="Optional" value="<?= htmlspecialchars($customerNameVal) ?>">
         </div>
         <div class="col-md-6">
           <label for="gcashNumber" class="form-label">GCash number</label>
-          <input type="text" class="form-control" id="gcashNumber" name="gcash_number" maxlength="30" placeholder="09XXXXXXXXX">
+          <input type="text" class="form-control" id="gcashNumber" name="gcash_number" maxlength="30" placeholder="09XXXXXXXXX" value="<?= htmlspecialchars($gcashNumberVal) ?>">
         </div>
         <div class="col-md-6">
           <label for="referenceNo" class="form-label">Reference / confirmation</label>
-          <input type="text" class="form-control" id="referenceNo" name="reference_no" maxlength="100" placeholder="From GCash receipt">
+          <input type="text" class="form-control" id="referenceNo" name="reference_no" maxlength="100" placeholder="From GCash receipt" value="<?= htmlspecialchars($referenceNoVal) ?>">
         </div>
         <div class="col-md-6">
           <label for="notes" class="form-label">Notes</label>
-          <input type="text" class="form-control" id="notes" name="notes" maxlength="255" placeholder="Optional">
+          <input type="text" class="form-control" id="notes" name="notes" maxlength="255" placeholder="Optional" value="<?= htmlspecialchars($notesVal) ?>">
         </div>
       </div>
 
       <div class="d-flex gap-2">
-        <button type="submit" class="btn btn-rice" id="submitBtn">Save Cash-In</button>
-        <a href="gcash.php" class="btn btn-outline-secondary">Cancel</a>
+        <button type="submit" class="btn btn-rice" id="submitBtn"><?= $isEdit ? 'Update' : 'Save Cash-In' ?></button>
+        <?php if ($isEdit): ?>
+          <a href="gcash_view.php?id=<?= (int) $row['id'] ?>" class="btn btn-outline-secondary">Cancel</a>
+        <?php else: ?>
+          <a href="gcash.php" class="btn btn-outline-secondary">Cancel</a>
+        <?php endif; ?>
       </div>
     </form>
   </div>
@@ -153,6 +202,7 @@ require __DIR__ . '/includes/header.php';
 <script>
 document.addEventListener('DOMContentLoaded', function () {
   const tiers = <?= json_encode($tiersJs, JSON_UNESCAPED_UNICODE) ?>;
+  const isEdit = <?= $isEdit ? 'true' : 'false' ?>;
   const amountInput = document.getElementById('cashinAmount');
   const suggestedEl = document.getElementById('suggestedFee');
   const feeInput = document.getElementById('feeCharged');
@@ -163,7 +213,7 @@ document.addEventListener('DOMContentLoaded', function () {
   const amountHint = document.getElementById('amountHint');
   const typeHelp = document.getElementById('typeHelp');
   const submitBtn = document.getElementById('submitBtn');
-  let feeTouched = false;
+  let feeTouched = isEdit;
 
   function formatMoney(value) {
     return '₱' + Number(value).toLocaleString(undefined, {
@@ -195,7 +245,7 @@ document.addEventListener('DOMContentLoaded', function () {
       amountHint.textContent = 'Cash the customer receives from you';
       totalLabel.textContent = 'Deduct from their GCash';
       totalHint.textContent = 'Amount + fee';
-      submitBtn.textContent = 'Save Cash-Out';
+      submitBtn.textContent = isEdit ? 'Update' : 'Save Cash-Out';
       totalEl.classList.remove('text-success');
       totalEl.classList.add('text-primary');
     } else {
@@ -204,7 +254,7 @@ document.addEventListener('DOMContentLoaded', function () {
       amountHint.textContent = 'Amount loaded to their GCash wallet';
       totalLabel.textContent = 'Collect from customer';
       totalHint.textContent = 'Amount + fee';
-      submitBtn.textContent = 'Save Cash-In';
+      submitBtn.textContent = isEdit ? 'Update' : 'Save Cash-In';
       totalEl.classList.add('text-success');
       totalEl.classList.remove('text-primary');
     }

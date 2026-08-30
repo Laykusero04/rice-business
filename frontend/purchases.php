@@ -138,7 +138,7 @@ require __DIR__ . '/includes/header.php';
             <td class="text-end">₱<?= number_format((float) $purchase['total'], 2) ?></td>
             <td class="text-end text-nowrap">
               <a href="purchase_view.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-sm btn-outline-primary">View</a>
-              <a href="purchase_edit.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
+              <a href="purchase_new.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
             </td>
           </tr>
         <?php endforeach; ?>

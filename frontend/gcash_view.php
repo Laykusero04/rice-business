@@ -47,7 +47,7 @@ require __DIR__ . '/includes/header.php';
     <p class="text-muted mb-0"><?= htmlspecialchars($row['cashin_date']) ?></p>
   </div>
   <div class="d-flex gap-2">
-    <a href="gcash_edit.php?id=<?= (int) $row['id'] ?>" class="btn btn-outline-primary">Edit</a>
+    <a href="gcash_new.php?id=<?= (int) $row['id'] ?>" class="btn btn-outline-primary">Edit</a>
     <form
       method="POST"
       action="/rice-business/backend/gcash_cashin_delete.php"

@@ -170,7 +170,7 @@ require __DIR__ . '/includes/header.php';
             </td>
             <td class="text-end text-nowrap">
               <a href="sale_view.php?id=<?= (int) $sale['id'] ?>" class="btn btn-sm btn-outline-primary">View</a>
-              <a href="sale_edit.php?id=<?= (int) $sale['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
+              <a href="sale_new.php?id=<?= (int) $sale['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
               <form
                 method="POST"
                 action="/rice-business/backend/sale_delete.php"

@@ -5,30 +5,87 @@ require_once __DIR__ . '/../backend/stock_lots.php';
 requireLogin();
 
 $user = currentUser();
-$pageTitle = 'New Sale';
-$activePage = 'sales-new';
+
+$id = isset($_GET['id']) ? (int) $_GET['id'] : 0;
+$isEdit = $id > 0;
+
+$sale = null;
+$saleItems = [];
+$reservedByProduct = [];
+$saleLotIds = [];
+$saleProductIds = [];
+$notesValue = '';
+
+if ($isEdit) {
+    $saleStmt = $pdo->prepare('SELECT * FROM sales WHERE id = ? LIMIT 1');
+    $saleStmt->execute([$id]);
+    $sale = $saleStmt->fetch();
+
+    if (!$sale) {
+        header('Location: /rice-business/frontend/sales.php?error=notfound');
+        exit;
+    }
+
+    $itemStmt = $pdo->prepare(
+        'SELECT product_id, stock_lot_id, quantity, price FROM sale_items WHERE sale_id = ? ORDER BY id ASC'
+    );
+    $itemStmt->execute([$id]);
+    $saleItems = $itemStmt->fetchAll();
+
+    foreach ($saleItems as $item) {
+        $pid = (int) $item['product_id'];
+        $reservedByProduct[$pid] = ($reservedByProduct[$pid] ?? 0) + (float) $item['quantity'];
+    }
+
+    $saleLotIds = array_unique(array_filter(array_map(
+        static fn ($item) => (int) ($item['stock_lot_id'] ?? 0),
+        $saleItems
+    )));
+    $saleProductIds = array_unique(array_map(static fn ($item) => (int) $item['product_id'], $saleItems));
+
+    $existingNotes = (string) ($sale['notes'] ?? '');
+    $editableNotes = [];
+    foreach (preg_split("/\r\n|\n|\r/", $existingNotes) as $line) {
+        $line = trim($line);
+        if ($line !== '' && !str_starts_with($line, 'Collected ₱')) {
+            $editableNotes[] = $line;
+        }
+    }
+    $notesValue = implode("\n", $editableNotes);
+}
+
+$pageTitle = $isEdit ? 'Edit Sale' : 'New Sale';
+$activePage = $isEdit ? 'sales-history' : 'sales-new';
 
 $customers = $pdo->query('SELECT id, name FROM customers ORDER BY name ASC')->fetchAll();
-$products = $pdo->query(
+$productsRaw = $pdo->query(
     "SELECT id, name, product_type, unit, selling_price, selling_price_sack, kg_per_sack, stock
      FROM products
      WHERE status = 'active'
      ORDER BY (product_type = 'RICE') DESC, name ASC"
 )->fetchAll();
 
-$lotsByProduct = fetchOpenLotsByProduct($pdo);
+$products = [];
+foreach ($productsRaw as $product) {
+    $pid = (int) $product['id'];
+    $available = (float) $product['stock'] + ($reservedByProduct[$pid] ?? 0);
+    $product['available_stock'] = $available;
+    $products[] = $product;
+}
 
+$lotsByProduct = fetchOpenLotsByProduct($pdo, $isEdit ? $id : null);
 $lotsForJs = [];
 foreach ($lotsByProduct as $pid => $lots) {
     $sellable = [];
     foreach ($lots as $lot) {
         $remaining = round((float) $lot['quantity_remaining'], 2);
-        // Hide unsalable crumbs from New Sale
-        if (isLotUnsalable($remaining)) {
+        $lotId = (int) $lot['id'];
+        // Hide unsalable crumbs, unless they are already on this sale
+        if (isLotUnsalable($remaining) && !in_array($lotId, $saleLotIds, true)) {
             continue;
         }
         $sellable[] = [
-            'id' => (int) $lot['id'],
+            'id' => $lotId,
             'label' => formatLotLabel($lot),
             'remaining' => $remaining,
             'low' => isLotLow($remaining),
@@ -36,12 +93,6 @@ foreach ($lotsByProduct as $pid => $lots) {
     }
     if (count($sellable) > 0) {
         $lotsForJs[(string) $pid] = $sellable;
-        $lotsByProduct[$pid] = array_values(array_filter(
-            $lots,
-            static fn ($lot) => !isLotUnsalable((float) $lot['quantity_remaining'])
-        ));
-    } else {
-        unset($lotsByProduct[$pid]);
     }
 }
 
@@ -49,8 +100,9 @@ $riceProducts = [];
 $otherProducts = [];
 foreach ($products as $p) {
     $pid = (int) $p['id'];
-    // Only products with an open batch can be sold
-    if (!isset($lotsByProduct[$pid]) || count($lotsByProduct[$pid]) === 0) {
+    $hasLots = isset($lotsForJs[(string) $pid]) && count($lotsForJs[(string) $pid]) > 0;
+    $onSale = in_array($pid, $saleProductIds, true);
+    if (!$hasLots && !$onSale) {
         continue;
     }
     if (($p['product_type'] ?? 'RICE') === 'RICE') {
@@ -61,6 +113,7 @@ foreach ($products as $p) {
 }
 
 $hasSellable = count($riceProducts) + count($otherProducts) > 0;
+$showForm = $isEdit ? count($products) > 0 : $hasSellable;
 
 $flash = '';
 $flashType = 'danger';
@@ -74,24 +127,45 @@ if (isset($_GET['error'])) {
             . htmlspecialchars($_GET['product'] ?? 'selected product')
             . '.',
         'lot' => 'Choose a valid stock batch for each item.',
-        'save' => 'Could not save the sale. Please try again.',
+        'save' => $isEdit ? 'Could not update the sale. Please try again.' : 'Could not save the sale. Please try again.',
         default => 'Something went wrong.',
     };
 }
+
+$existingItemsJs = array_map(static function ($item) {
+    return [
+        'product_id' => (int) $item['product_id'],
+        'stock_lot_id' => (int) ($item['stock_lot_id'] ?? 0),
+        'quantity' => (float) $item['quantity'],
+        'price' => (float) $item['price'],
+    ];
+}, $saleItems);
 
 require __DIR__ . '/includes/header.php';
 ?>
 
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
-    <h1 class="h3 mb-1">New Sale</h1>
-    <p class="text-muted mb-0">
-      Just buying? Leave customer as walk-in. Use Lend only for utang.
-      Qty is in kg (0.01) or whole sacks. <strong>By kg</strong> uses the small-kg sell price;
-      <strong>By sack</strong> uses the whole-sack sell price (no scoop waste). Batches under 0.05 kg are hidden.
-    </p>
+    <?php if ($isEdit): ?>
+      <h1 class="h3 mb-1">Edit Sale #<?= (int) $sale['id'] ?></h1>
+      <p class="text-muted mb-0">
+        Changing items restores then re-deducts stock. Collection notes for utang are kept.
+      </p>
+    <?php else: ?>
+      <h1 class="h3 mb-1">New Sale</h1>
+      <p class="text-muted mb-0">
+        Just buying? Leave customer as walk-in. Use Lend only for utang.
+        Qty is in kg (0.01) or whole sacks. <strong>By kg</strong> uses the small-kg sell price;
+        <strong>By sack</strong> uses the whole-sack sell price (no scoop waste). Batches under 0.05 kg are hidden.
+      </p>
+    <?php endif; ?>
   </div>
-  <a href="sales.php" class="btn btn-outline-secondary">Sales History</a>
+  <div class="d-flex gap-2">
+    <?php if ($isEdit): ?>
+      <a href="sale_view.php?id=<?= (int) $sale['id'] ?>" class="btn btn-outline-secondary">View</a>
+    <?php endif; ?>
+    <a href="sales.php" class="btn btn-outline-secondary">Sales History</a>
+  </div>
 </div>
 
 <?php if ($flash !== ''): ?>
@@ -101,21 +175,34 @@ require __DIR__ . '/includes/header.php';
   </div>
 <?php endif; ?>
 
-<?php if (!$hasSellable): ?>
+<?php if (!$showForm): ?>
   <div class="alert alert-warning">
-    No products with stock batches to sell.
-    Add stock via <a href="purchase_new.php">New Purchase</a>, or create a
-    <a href="products.php">product</a> first.
+    <?php if ($isEdit): ?>
+      Add at least one active <a href="products.php">product</a> before editing a sale.
+    <?php else: ?>
+      No products with stock batches to sell.
+      Add stock via <a href="purchase_new.php">New Purchase</a>, or create a
+      <a href="products.php">product</a> first.
+    <?php endif; ?>
   </div>
 <?php else: ?>
   <form method="POST" action="/rice-business/backend/sale_save.php" id="saleForm" class="bg-white rounded shadow-sm p-3 p-md-4">
+    <?php if ($isEdit): ?>
+      <input type="hidden" name="id" value="<?= (int) $sale['id'] ?>">
+    <?php endif; ?>
+
     <div class="row g-3 mb-4">
       <div class="col-md-4">
         <label for="customerId" class="form-label">Customer</label>
         <select class="form-select" id="customerId" name="customer_id">
           <option value="">Walk-in / Just buying</option>
           <?php foreach ($customers as $customer): ?>
-            <option value="<?= (int) $customer['id'] ?>"><?= htmlspecialchars($customer['name']) ?></option>
+            <option
+              value="<?= (int) $customer['id'] ?>"
+              <?= $isEdit && (int) ($sale['customer_id'] ?? 0) === (int) $customer['id'] ? 'selected' : '' ?>
+            >
+              <?= htmlspecialchars($customer['name']) ?>
+            </option>
           <?php endforeach; ?>
         </select>
         <div class="form-text" id="customerHint">
@@ -137,19 +224,34 @@ require __DIR__ . '/includes/header.php';
       <div class="col-md-4">
         <label for="paymentMethod" class="form-label">Payment</label>
         <select class="form-select" id="paymentMethod" name="payment_method" required>
-          <option value="cash">Cash (paid)</option>
-          <option value="gcash">GCash (paid)</option>
-          <option value="bank">Bank Transfer (paid)</option>
-          <option value="credit">Lend (Utang)</option>
+          <?php $pay = $isEdit ? (string) $sale['payment_method'] : 'cash'; ?>
+          <option value="cash" <?= $pay === 'cash' ? 'selected' : '' ?>>Cash (paid)</option>
+          <option value="gcash" <?= $pay === 'gcash' ? 'selected' : '' ?>>GCash (paid)</option>
+          <option value="bank" <?= $pay === 'bank' ? 'selected' : '' ?>>Bank Transfer (paid)</option>
+          <option value="credit" <?= $pay === 'credit' ? 'selected' : '' ?>>Lend (Utang)</option>
         </select>
       </div>
       <div class="col-md-4">
         <label for="saleDate" class="form-label">Date</label>
-        <input type="date" class="form-control" id="saleDate" name="sale_date" value="<?= date('Y-m-d') ?>" required>
+        <input
+          type="date"
+          class="form-control"
+          id="saleDate"
+          name="sale_date"
+          value="<?= htmlspecialchars($isEdit ? $sale['sale_date'] : date('Y-m-d')) ?>"
+          required
+        >
       </div>
       <div class="col-md-8">
         <label for="notes" class="form-label">Notes</label>
-        <input type="text" class="form-control" id="notes" name="notes" placeholder="Optional">
+        <input
+          type="text"
+          class="form-control"
+          id="notes"
+          name="notes"
+          value="<?= htmlspecialchars($notesValue) ?>"
+          placeholder="Optional"
+        >
       </div>
     </div>
 
@@ -189,8 +291,12 @@ require __DIR__ . '/includes/header.php';
     </div>
 
     <div class="d-flex gap-2">
-      <button type="submit" class="btn btn-rice">Save Sale</button>
-      <a href="sales.php" class="btn btn-outline-secondary">Cancel</a>
+      <button type="submit" class="btn btn-rice"><?= $isEdit ? 'Update Sale' : 'Save Sale' ?></button>
+      <?php if ($isEdit): ?>
+        <a href="sale_view.php?id=<?= (int) $sale['id'] ?>" class="btn btn-outline-secondary">Cancel</a>
+      <?php else: ?>
+        <a href="sales.php" class="btn btn-outline-secondary">Cancel</a>
+      <?php endif; ?>
     </div>
   </form>
 
@@ -224,12 +330,12 @@ require __DIR__ . '/includes/header.php';
                   data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
                   data-selling-price-sack="<?= htmlspecialchars(number_format($sackSell, 2, '.', '')) ?>"
                   data-kg-per-sack="<?= htmlspecialchars(number_format($kgPerSack, 2, '.', '')) ?>"
-                  data-stock="<?= htmlspecialchars($product['stock']) ?>"
+                  data-stock="<?= htmlspecialchars(number_format($product['available_stock'], 2, '.', '')) ?>"
                   data-unit="kg"
                   data-name="<?= htmlspecialchars($product['name'], ENT_QUOTES) ?>"
                 >
                   <?= htmlspecialchars($product['name']) ?>
-                  (<?= number_format((float) $product['stock'], 2) ?> kg)
+                  (<?= number_format((float) $product['available_stock'], 2) ?> kg)
                 </option>
               <?php endforeach; ?>
             </optgroup>
@@ -242,12 +348,12 @@ require __DIR__ . '/includes/header.php';
                   value="<?= (int) $product['id'] ?>"
                   data-product-type="GROCERY"
                   data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
-                  data-stock="<?= htmlspecialchars($product['stock']) ?>"
+                  data-stock="<?= htmlspecialchars(number_format($product['available_stock'], 2, '.', '')) ?>"
                   data-unit="<?= htmlspecialchars($unit) ?>"
                   data-name="<?= htmlspecialchars($product['name'], ENT_QUOTES) ?>"
                 >
                   <?= htmlspecialchars($product['name']) ?>
-                  (<?= number_format((float) $product['stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>)
+                  (<?= number_format((float) $product['available_stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>)
                 </option>
               <?php endforeach; ?>
             </optgroup>
@@ -305,6 +411,8 @@ require __DIR__ . '/includes/header.php';
     const walkinName = document.getElementById('walkinName');
     const customerHint = document.getElementById('customerHint');
     const lotsByProduct = <?= json_encode($lotsForJs, JSON_UNESCAPED_UNICODE) ?>;
+
+    const existingItems = <?= json_encode($existingItemsJs, JSON_UNESCAPED_UNICODE) ?>;
 
     function formatMoney(value) {
       return '₱' + Number(value).toLocaleString(undefined, {
@@ -464,9 +572,7 @@ require __DIR__ . '/includes/header.php';
             const currentQty = parseFloat(qtyInput.value) || 0;
             if (currentQty > remSacks + 0.0001) {
               qtyInput.value = remSacks.toFixed(2);
-              if (entryMode === 'sack') {
-                updateTotalDisplay();
-              }
+              updateTotalDisplay();
             }
           } else {
             qtyInput.max = String(remKg);
@@ -633,9 +739,7 @@ require __DIR__ . '/includes/header.php';
         refreshLine();
       });
 
-      lotSelect.addEventListener('change', function () {
-        applyLotMax();
-      });
+      lotSelect.addEventListener('change', applyLotMax);
 
       qtyInput.addEventListener('input', function () {
         if (entryMode === 'qty' || entryMode === 'sack') {
@@ -663,7 +767,9 @@ require __DIR__ . '/includes/header.php';
         recalcGrandTotal();
       });
 
+      row._refreshLine = refreshLine;
       row._populateLots = populateLots;
+      row._updateModeButtons = updateModeButtons;
       row._prepareSubmit = function () {
         if (entryMode !== 'sack') {
           return;
@@ -683,11 +789,48 @@ require __DIR__ . '/includes/header.php';
       setEntryMode('qty', true);
     }
 
-    function addRow() {
+    function addRow(preset) {
       const node = template.content.cloneNode(true);
       const row = node.querySelector('tr');
       tbody.appendChild(row);
       bindRow(row);
+
+      if (preset) {
+        const productSelect = row.querySelector('.product-select');
+        const qtyInput = row.querySelector('.qty-input');
+        const priceInput = row.querySelector('.price-input');
+        const qtyHint = row.querySelector('.qty-hint');
+        const priceHint = row.querySelector('.price-hint');
+
+        productSelect.value = String(preset.product_id);
+        qtyInput.value = preset.quantity;
+        priceInput.value = preset.price;
+
+        if (typeof row._updateModeButtons === 'function') {
+          row._updateModeButtons();
+        }
+
+        if (typeof row._populateLots === 'function') {
+          row._populateLots(preset.stock_lot_id || null);
+        }
+
+        const option = productSelect.selectedOptions[0];
+        const unit = option && option.dataset.unit ? option.dataset.unit : 'kg';
+        qtyHint.textContent = unit;
+        priceHint.textContent = 'per ' + unit;
+        if (unit === 'pc') {
+          qtyInput.step = '1';
+          qtyInput.min = '1';
+        } else {
+          qtyInput.step = '0.01';
+          qtyInput.min = '0.01';
+        }
+
+        if (typeof row._refreshLine === 'function') {
+          row._refreshLine();
+        }
+      }
+
       recalcGrandTotal();
     }
 
@@ -704,9 +847,18 @@ require __DIR__ . '/includes/header.php';
 
     paymentMethod.addEventListener('change', updateLendUi);
     customerId.addEventListener('change', updateLendUi);
-    document.getElementById('btnAddRow').addEventListener('click', addRow);
+    document.getElementById('btnAddRow').addEventListener('click', function () {
+      addRow(null);
+    });
     updateLendUi();
-    addRow();
+
+    if (existingItems.length > 0) {
+      existingItems.forEach(function (item) {
+        addRow(item);
+      });
+    } else {
+      addRow(null);
+    }
   });
   </script>
 <?php endif; ?>

@@ -93,11 +93,8 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $products = $stmt->fetchAll();
 
-$allRiceForDropdown = $pdo->query(
-    "SELECT id, name FROM products WHERE product_type = 'RICE' ORDER BY name ASC"
-)->fetchAll();
-$allGroceryForDropdown = $pdo->query(
-    "SELECT id, name FROM products WHERE product_type = 'GROCERY' ORDER BY name ASC"
+$allProductsForDropdown = $pdo->query(
+    "SELECT id, name, product_type FROM products ORDER BY (product_type = 'RICE') DESC, name ASC"
 )->fetchAll();
 
 $flash = '';
@@ -140,18 +137,20 @@ require __DIR__ . '/includes/header.php';
   <div>
     <h1 class="h3 mb-1">Products</h1>
     <p class="text-muted mb-0">
-      Products are the catalog. Add stock as priced <strong>batches</strong> via
-      <a href="purchase_new.php">New Purchase</a> — same product can have different buy prices.
+      Sell catalog only: names and sell prices. Stock and buy cost live on
+      <strong>batches</strong> from <a href="purchase_new.php">Purchases</a>.
+      To rebrand rice, reassign the batch in <a href="inventory.php">Inventory</a>
+      — do not create a duplicate product. To blend, use <a href="mix.php">Mix Rice</a>.
     </p>
   </div>
   <div class="d-flex flex-wrap gap-2">
     <button type="button" class="btn btn-outline-secondary" data-bs-toggle="modal" data-bs-target="#categoryModal">
       <i class="bi bi-tags"></i> Categories
     </button>
-    <button type="button" class="btn btn-rice" data-bs-toggle="modal" data-bs-target="#riceModal" id="btnAddRice">
+    <button type="button" class="btn btn-rice" data-bs-toggle="modal" data-bs-target="#productModal" data-product-type="RICE" id="btnAddRice">
       <i class="bi bi-plus-lg"></i> Add Rice
     </button>
-    <button type="button" class="btn btn-outline-success" data-bs-toggle="modal" data-bs-target="#groceryModal" id="btnAddGrocery">
+    <button type="button" class="btn btn-outline-success" data-bs-toggle="modal" data-bs-target="#productModal" data-product-type="GROCERY" id="btnAddGrocery">
       <i class="bi bi-plus-lg"></i> Add Other Item
     </button>
   </div>
@@ -311,6 +310,8 @@ require __DIR__ . '/includes/header.php';
               <button
                 type="button"
                 class="btn btn-sm btn-outline-primary btn-edit-product"
+                data-bs-toggle="modal"
+                data-bs-target="#productModal"
                 data-id="<?= (int) $product['id'] ?>"
                 data-name="<?= htmlspecialchars($product['name'], ENT_QUOTES) ?>"
                 data-product-type="<?= htmlspecialchars($productType, ENT_QUOTES) ?>"
@@ -346,222 +347,154 @@ require __DIR__ . '/includes/header.php';
   </table>
 </div>
 
-<!-- Add / Edit Rice -->
-<div class="modal fade" id="riceModal" tabindex="-1" aria-labelledby="riceModalLabel" aria-hidden="true">
+<!-- Add / Edit product (RICE | GROCERY) -->
+<div class="modal fade" id="productModal" tabindex="-1" aria-labelledby="productModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
     <div class="modal-content">
       <div class="modal-header">
-        <h2 class="modal-title fs-5" id="riceModalLabel">Add Rice</h2>
+        <h2 class="modal-title fs-5" id="productModalLabel">Add Rice</h2>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <div id="riceAddModeWrap" class="mb-3">
+        <div id="productAddModeWrap" class="mb-3">
           <label class="form-label d-block">What do you want to do?</label>
-          <div class="btn-group w-100" role="group" aria-label="Rice add mode">
-            <input type="radio" class="btn-check" name="riceAddMode" id="riceModeNew" value="new" checked>
-            <label class="btn btn-outline-secondary" for="riceModeNew">New product</label>
-            <input type="radio" class="btn-check" name="riceAddMode" id="riceModeExisting" value="existing">
-            <label class="btn btn-outline-secondary" for="riceModeExisting">Existing (add batch)</label>
+          <div class="btn-group w-100" role="group" aria-label="Product add mode">
+            <input type="radio" class="btn-check" name="productAddMode" id="productModeNew" value="new" checked>
+            <label class="btn btn-outline-secondary" for="productModeNew">New product</label>
+            <input type="radio" class="btn-check" name="productAddMode" id="productModeExisting" value="existing">
+            <label class="btn btn-outline-secondary" for="productModeExisting">Existing (add batch)</label>
           </div>
         </div>
 
-        <div id="riceExistingPanel" class="d-none">
-          <p class="small text-muted">
+        <div id="productExistingPanel" class="d-none">
+          <p class="small text-muted" id="productExistingHint">
             Same rice, different buy price? Pick the product, then stock it as a new batch on a purchase.
           </p>
           <div class="mb-3">
-            <label for="riceExistingSelect" class="form-label">Rice product</label>
-            <select class="form-select" id="riceExistingSelect">
-              <option value="">Select rice…</option>
-              <?php foreach ($allRiceForDropdown as $rp): ?>
-                <option value="<?= (int) $rp['id'] ?>"><?= htmlspecialchars($rp['name']) ?></option>
+            <label for="productExistingSelect" class="form-label" id="productExistingLabel">Rice product</label>
+            <select class="form-select" id="productExistingSelect">
+              <option value="">Select…</option>
+              <?php foreach ($allProductsForDropdown as $ep): ?>
+                <option
+                  value="<?= (int) $ep['id'] ?>"
+                  data-product-type="<?= htmlspecialchars($ep['product_type'] ?? 'RICE') ?>"
+                >
+                  <?= htmlspecialchars($ep['name']) ?>
+                </option>
               <?php endforeach; ?>
             </select>
           </div>
-          <a href="purchase_new.php" class="btn btn-rice w-100 disabled" id="riceContinuePurchase" aria-disabled="true">
+          <a href="purchase_new.php" class="btn btn-rice w-100 disabled" id="productContinuePurchase" aria-disabled="true">
             Continue to New Purchase
           </a>
         </div>
 
-        <form method="POST" action="/rice-business/backend/product_save.php" id="riceForm">
-          <div id="riceCatalogFields">
-            <input type="hidden" name="id" id="riceProductId" value="">
-            <input type="hidden" name="product_type" value="RICE">
-            <input type="hidden" name="unit" value="kg">
+        <form method="POST" action="/rice-business/backend/product_save.php" id="productForm">
+          <div id="productCatalogFields">
+            <input type="hidden" name="id" id="productId" value="">
+            <input type="hidden" name="product_type" id="productType" value="RICE">
 
-            <p class="small text-muted" id="riceCatalogHint">
+            <p class="small text-muted" id="productCatalogHint">
               Catalog only — stock comes from Purchases as batches (by sack).
             </p>
 
-            <div class="mb-3" id="riceStockReadonlyWrap" hidden>
+            <div class="mb-3" id="productStockReadonlyWrap" hidden>
               <label class="form-label">Current stock</label>
-              <div class="form-control-plaintext" id="riceStockReadonly">—</div>
+              <div class="form-control-plaintext" id="productStockReadonly">—</div>
               <div class="form-text">Change stock by adding a batch on New Purchase.</div>
             </div>
 
             <div class="mb-3">
-              <label for="riceName" class="form-label">Rice Name</label>
-              <input type="text" class="form-control" id="riceName" name="name" required maxlength="100" placeholder="e.g. Dinorado">
+              <label for="productName" class="form-label" id="productNameLabel">Rice Name</label>
+              <input type="text" class="form-control" id="productName" name="name" required maxlength="100" placeholder="e.g. Dinorado">
             </div>
 
-            <div class="mb-3">
-              <label for="riceCategory" class="form-label">Category</label>
-              <select class="form-select" id="riceCategory" name="category" required>
-                <option value="">Select category</option>
-                <?php foreach ($riceCategories as $cat): ?>
-                  <option value="<?= htmlspecialchars($cat['name']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
-                <?php endforeach; ?>
-              </select>
-            </div>
+            <div id="riceFields">
+              <input type="hidden" name="unit" id="riceUnit" value="kg">
 
-            <div class="mb-3">
-              <label for="riceKgPerSack" class="form-label">Kg per sack</label>
-              <input type="number" class="form-control" id="riceKgPerSack" name="kg_per_sack" step="0.01" min="0.01" value="25" required>
-            </div>
-
-            <div class="row g-3 mb-3">
-              <div class="col-md-6">
-                <label for="riceSellingPrice" class="form-label">Sell per kg — small (₱)</label>
-                <input type="number" class="form-control" id="riceSellingPrice" name="selling_price" step="0.01" min="0" required>
-                <div class="form-text">Scooped / small kg (higher for waste)</div>
-              </div>
-              <div class="col-md-6">
-                <label for="riceSellingPriceSack" class="form-label">Sell per sack (₱)</label>
-                <input type="number" class="form-control" id="riceSellingPriceSack" name="selling_price_sack" step="0.01" min="0" required>
-                <div class="form-text">Whole sack price</div>
-              </div>
-            </div>
-
-            <div class="mb-3">
-              <label for="riceMinSacks" class="form-label">Low stock alert (sacks)</label>
-              <input type="number" class="form-control" id="riceMinSacks" name="min_sacks" step="0.01" min="0" value="1" required>
-            </div>
-
-            <div class="mb-0">
-              <label for="riceStatus" class="form-label">Status</label>
-              <select class="form-select" id="riceStatus" name="status">
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-              </select>
-            </div>
-          </div>
-          <div class="modal-footer px-0 pb-0" id="riceFormFooter">
-            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="submit" class="btn btn-rice" id="riceSubmitBtn">Save Rice</button>
-          </div>
-        </form>
-      </div>
-      <div class="modal-footer d-none" id="riceExistingFooter">
-        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Add / Edit Other Item -->
-<div class="modal fade" id="groceryModal" tabindex="-1" aria-labelledby="groceryModalLabel" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2 class="modal-title fs-5" id="groceryModalLabel">Add Other Item</h2>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <div id="groceryAddModeWrap" class="mb-3">
-          <label class="form-label d-block">What do you want to do?</label>
-          <div class="btn-group w-100" role="group" aria-label="Item add mode">
-            <input type="radio" class="btn-check" name="groceryAddMode" id="groceryModeNew" value="new" checked>
-            <label class="btn btn-outline-secondary" for="groceryModeNew">New product</label>
-            <input type="radio" class="btn-check" name="groceryAddMode" id="groceryModeExisting" value="existing">
-            <label class="btn btn-outline-secondary" for="groceryModeExisting">Existing (add batch)</label>
-          </div>
-        </div>
-
-        <div id="groceryExistingPanel" class="d-none">
-          <p class="small text-muted">
-            Same item, different buy price? Pick it, then stock a new batch on a purchase.
-          </p>
-          <div class="mb-3">
-            <label for="groceryExistingSelect" class="form-label">Product</label>
-            <select class="form-select" id="groceryExistingSelect">
-              <option value="">Select item…</option>
-              <?php foreach ($allGroceryForDropdown as $gp): ?>
-                <option value="<?= (int) $gp['id'] ?>"><?= htmlspecialchars($gp['name']) ?></option>
-              <?php endforeach; ?>
-            </select>
-          </div>
-          <a href="purchase_new.php" class="btn btn-outline-success w-100 disabled" id="groceryContinuePurchase" aria-disabled="true">
-            Continue to New Purchase
-          </a>
-        </div>
-
-        <form method="POST" action="/rice-business/backend/product_save.php" id="groceryForm">
-          <div id="groceryCatalogFields">
-            <input type="hidden" name="id" id="groceryProductId" value="">
-            <input type="hidden" name="product_type" value="GROCERY">
-
-            <p class="small text-muted" id="groceryCatalogHint">
-              Catalog only — stock comes from Purchases as batches.
-            </p>
-
-            <div class="mb-3" id="groceryStockReadonlyWrap" hidden>
-              <label class="form-label">Current stock</label>
-              <div class="form-control-plaintext" id="groceryStockReadonly">—</div>
-              <div class="form-text">Change stock by adding a batch on New Purchase.</div>
-            </div>
-
-            <div class="mb-3">
-              <label for="groceryName" class="form-label">Item Name</label>
-              <input type="text" class="form-control" id="groceryName" name="name" required maxlength="100" placeholder="e.g. Egg">
-            </div>
-
-            <div class="row g-3 mb-3">
-              <div class="col-md-6">
-                <label for="groceryCategory" class="form-label">Category</label>
-                <select class="form-select" id="groceryCategory" name="category" required>
+              <div class="mb-3">
+                <label for="riceCategory" class="form-label">Category</label>
+                <select class="form-select" id="riceCategory" name="category" required>
                   <option value="">Select category</option>
-                  <?php foreach ($groceryCategories as $cat): ?>
+                  <?php foreach ($riceCategories as $cat): ?>
                     <option value="<?= htmlspecialchars($cat['name']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
                   <?php endforeach; ?>
                 </select>
               </div>
-              <div class="col-md-6">
-                <label for="groceryUnit" class="form-label">Unit</label>
-                <select class="form-select" id="groceryUnit" name="unit" required>
-                  <option value="pc">pc (pieces)</option>
-                  <option value="L">L (liters)</option>
-                  <option value="ml">ml</option>
-                </select>
+
+              <div class="mb-3">
+                <label for="riceKgPerSack" class="form-label">Kg per sack</label>
+                <input type="number" class="form-control" id="riceKgPerSack" name="kg_per_sack" step="0.01" min="0.01" value="25" required>
+              </div>
+
+              <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                  <label for="riceSellingPrice" class="form-label">Sell per kg — small (₱)</label>
+                  <input type="number" class="form-control" id="riceSellingPrice" name="selling_price" step="0.01" min="0" required>
+                  <div class="form-text">Scooped / small kg (higher for waste)</div>
+                </div>
+                <div class="col-md-6">
+                  <label for="riceSellingPriceSack" class="form-label">Sell per sack (₱)</label>
+                  <input type="number" class="form-control" id="riceSellingPriceSack" name="selling_price_sack" step="0.01" min="0" required>
+                  <div class="form-text">Whole sack price</div>
+                </div>
+              </div>
+
+              <div class="mb-3">
+                <label for="riceMinSacks" class="form-label">Low stock alert (sacks)</label>
+                <input type="number" class="form-control" id="riceMinSacks" name="min_sacks" step="0.01" min="0" value="1" required>
               </div>
             </div>
 
-            <div class="row g-3 mb-3">
-              <div class="col-md-6">
-                <label for="grocerySellingPrice" class="form-label" id="grocerySellingLabel">Selling price (₱)</label>
-                <input type="number" class="form-control" id="grocerySellingPrice" name="selling_price" step="0.01" min="0" required>
+            <div id="groceryFields" hidden>
+              <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                  <label for="groceryCategory" class="form-label">Category</label>
+                  <select class="form-select" id="groceryCategory" name="category" data-require-when-on="1" disabled>
+                    <option value="">Select category</option>
+                    <?php foreach ($groceryCategories as $cat): ?>
+                      <option value="<?= htmlspecialchars($cat['name']) ?>"><?= htmlspecialchars($cat['name']) ?></option>
+                    <?php endforeach; ?>
+                  </select>
+                </div>
+                <div class="col-md-6">
+                  <label for="groceryUnit" class="form-label">Unit</label>
+                  <select class="form-select" id="groceryUnit" name="unit" data-require-when-on="1" disabled>
+                    <option value="pc">pc (pieces)</option>
+                    <option value="L">L (liters)</option>
+                    <option value="ml">ml</option>
+                  </select>
+                </div>
               </div>
-              <div class="col-md-6">
-                <label for="groceryMinStock" class="form-label">Low stock alert</label>
-                <input type="number" class="form-control" id="groceryMinStock" name="minimum_stock" step="0.01" min="0" value="0" required>
-                <div class="form-text" id="groceryUnitHint">Use whole numbers when unit is pc.</div>
+
+              <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                  <label for="grocerySellingPrice" class="form-label" id="grocerySellingLabel">Selling price (₱)</label>
+                  <input type="number" class="form-control" id="grocerySellingPrice" name="selling_price" step="0.01" min="0" data-require-when-on="1" disabled>
+                </div>
+                <div class="col-md-6">
+                  <label for="groceryMinStock" class="form-label">Low stock alert</label>
+                  <input type="number" class="form-control" id="groceryMinStock" name="minimum_stock" step="0.01" min="0" value="0" data-require-when-on="1" disabled>
+                  <div class="form-text" id="groceryUnitHint">Use whole numbers when unit is pc.</div>
+                </div>
               </div>
             </div>
 
             <div class="mb-0">
-              <label for="groceryStatus" class="form-label">Status</label>
-              <select class="form-select" id="groceryStatus" name="status">
+              <label for="productStatus" class="form-label">Status</label>
+              <select class="form-select" id="productStatus" name="status">
                 <option value="active">Active</option>
                 <option value="inactive">Inactive</option>
               </select>
             </div>
           </div>
-          <div class="modal-footer px-0 pb-0" id="groceryFormFooter">
+          <div class="modal-footer px-0 pb-0" id="productFormFooter">
             <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="submit" class="btn btn-outline-success" id="grocerySubmitBtn">Save Item</button>
+            <button type="submit" class="btn btn-rice" id="productSubmitBtn">Save Rice</button>
           </div>
         </form>
       </div>
-      <div class="modal-footer d-none" id="groceryExistingFooter">
+      <div class="modal-footer d-none" id="productExistingFooter">
         <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
       </div>
     </div>
@@ -640,10 +573,23 @@ require __DIR__ . '/includes/header.php';
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-  const riceModalEl = document.getElementById('riceModal');
-  const groceryModalEl = document.getElementById('groceryModal');
-  const riceModal = bootstrap.Modal.getOrCreateInstance(riceModalEl);
-  const groceryModal = bootstrap.Modal.getOrCreateInstance(groceryModalEl);
+  const modalEl = document.getElementById('productModal');
+  const typeInput = document.getElementById('productType');
+  const riceFields = document.getElementById('riceFields');
+  const groceryFields = document.getElementById('groceryFields');
+
+  function currentType() {
+    return typeInput.value === 'GROCERY' ? 'GROCERY' : 'RICE';
+  }
+
+  function setFieldsEnabled(wrap, enabled) {
+    wrap.querySelectorAll('input, select, textarea').forEach(function (el) {
+      el.disabled = !enabled;
+      if (el.dataset.requireWhenOn === '1') {
+        el.required = enabled;
+      }
+    });
+  }
 
   function updateGroceryUnitUi() {
     const unit = document.getElementById('groceryUnit').value || 'pc';
@@ -654,29 +600,60 @@ document.addEventListener('DOMContentLoaded', function () {
     minStock.step = unit === 'pc' ? '1' : '0.01';
   }
 
-  function setRiceAddMode(mode) {
-    const isExisting = mode === 'existing';
-    document.getElementById('riceExistingPanel').classList.toggle('d-none', !isExisting);
-    document.getElementById('riceCatalogFields').classList.toggle('d-none', isExisting);
-    document.getElementById('riceFormFooter').classList.toggle('d-none', isExisting);
-    document.getElementById('riceExistingFooter').classList.toggle('d-none', !isExisting);
-    document.getElementById('riceModeNew').checked = !isExisting;
-    document.getElementById('riceModeExisting').checked = isExisting;
+  function filterExistingOptions() {
+    const type = currentType();
+    const sel = document.getElementById('productExistingSelect');
+    sel.querySelectorAll('option[data-product-type]').forEach(function (opt) {
+      opt.hidden = opt.dataset.productType !== type;
+    });
+    const selected = sel.selectedOptions[0];
+    if (selected && selected.dataset.productType && selected.dataset.productType !== type) {
+      sel.value = '';
+    }
   }
 
-  function setGroceryAddMode(mode) {
-    const isExisting = mode === 'existing';
-    document.getElementById('groceryExistingPanel').classList.toggle('d-none', !isExisting);
-    document.getElementById('groceryCatalogFields').classList.toggle('d-none', isExisting);
-    document.getElementById('groceryFormFooter').classList.toggle('d-none', isExisting);
-    document.getElementById('groceryExistingFooter').classList.toggle('d-none', !isExisting);
-    document.getElementById('groceryModeNew').checked = !isExisting;
-    document.getElementById('groceryModeExisting').checked = isExisting;
+  function setProductType(type) {
+    const rice = type !== 'GROCERY';
+    typeInput.value = rice ? 'RICE' : 'GROCERY';
+
+    riceFields.hidden = !rice;
+    groceryFields.hidden = rice;
+    setFieldsEnabled(riceFields, rice);
+    setFieldsEnabled(groceryFields, !rice);
+
+    document.getElementById('productModalLabel').textContent = rice ? 'Add Rice' : 'Add Other Item';
+    document.getElementById('productNameLabel').textContent = rice ? 'Rice Name' : 'Item Name';
+    document.getElementById('productName').placeholder = rice ? 'e.g. Dinorado' : 'e.g. Egg';
+    document.getElementById('productCatalogHint').textContent = rice
+      ? 'Catalog only — stock comes from Purchases as batches (by sack).'
+      : 'Catalog only — stock comes from Purchases as batches.';
+    document.getElementById('productExistingHint').textContent = rice
+      ? 'Same rice, different buy price? Pick the product, then stock it as a new batch on a purchase.'
+      : 'Same item, different buy price? Pick it, then stock a new batch on a purchase.';
+    document.getElementById('productExistingLabel').textContent = rice ? 'Rice product' : 'Product';
+    document.getElementById('productSubmitBtn').textContent = rice ? 'Save Rice' : 'Save Item';
+    document.getElementById('productSubmitBtn').classList.toggle('btn-outline-success', !rice);
+    document.getElementById('productSubmitBtn').classList.toggle('btn-rice', rice);
+
+    filterExistingOptions();
+    if (!rice) {
+      updateGroceryUnitUi();
+    }
   }
 
-  function updateRiceContinueLink() {
-    const sel = document.getElementById('riceExistingSelect');
-    const link = document.getElementById('riceContinuePurchase');
+  function setAddMode(mode) {
+    const isExisting = mode === 'existing';
+    document.getElementById('productExistingPanel').classList.toggle('d-none', !isExisting);
+    document.getElementById('productCatalogFields').classList.toggle('d-none', isExisting);
+    document.getElementById('productFormFooter').classList.toggle('d-none', isExisting);
+    document.getElementById('productExistingFooter').classList.toggle('d-none', !isExisting);
+    document.getElementById('productModeNew').checked = !isExisting;
+    document.getElementById('productModeExisting').checked = isExisting;
+  }
+
+  function updateContinueLink() {
+    const sel = document.getElementById('productExistingSelect');
+    const link = document.getElementById('productContinuePurchase');
     const id = sel.value;
     if (id) {
       link.href = 'purchase_new.php?product_id=' + encodeURIComponent(id);
@@ -689,125 +666,86 @@ document.addEventListener('DOMContentLoaded', function () {
     }
   }
 
-  function updateGroceryContinueLink() {
-    const sel = document.getElementById('groceryExistingSelect');
-    const link = document.getElementById('groceryContinuePurchase');
-    const id = sel.value;
-    if (id) {
-      link.href = 'purchase_new.php?product_id=' + encodeURIComponent(id);
-      link.classList.remove('disabled');
-      link.removeAttribute('aria-disabled');
-    } else {
-      link.href = 'purchase_new.php';
-      link.classList.add('disabled');
-      link.setAttribute('aria-disabled', 'true');
-    }
-  }
-
-  function resetRiceForm() {
-    document.getElementById('riceProductId').value = '';
-    document.getElementById('riceName').value = '';
+  function resetForm(type) {
+    document.getElementById('productId').value = '';
+    document.getElementById('productName').value = '';
     document.getElementById('riceCategory').value = '';
     document.getElementById('riceKgPerSack').value = '25';
     document.getElementById('riceSellingPrice').value = '';
     document.getElementById('riceSellingPriceSack').value = '';
     document.getElementById('riceMinSacks').value = '1';
-    document.getElementById('riceStatus').value = 'active';
-    document.getElementById('riceModalLabel').textContent = 'Add Rice';
-    document.getElementById('riceSubmitBtn').textContent = 'Save Rice';
-    document.getElementById('riceAddModeWrap').classList.remove('d-none');
-    document.getElementById('riceStockReadonlyWrap').hidden = true;
-    document.getElementById('riceExistingSelect').value = '';
-    setRiceAddMode('new');
-    updateRiceContinueLink();
-  }
-
-  function resetGroceryForm() {
-    document.getElementById('groceryProductId').value = '';
-    document.getElementById('groceryName').value = '';
     document.getElementById('groceryCategory').value = '';
     document.getElementById('groceryUnit').value = 'pc';
     document.getElementById('groceryMinStock').value = '0';
     document.getElementById('grocerySellingPrice').value = '';
-    document.getElementById('groceryStatus').value = 'active';
-    document.getElementById('groceryModalLabel').textContent = 'Add Other Item';
-    document.getElementById('grocerySubmitBtn').textContent = 'Save Item';
-    document.getElementById('groceryAddModeWrap').classList.remove('d-none');
-    document.getElementById('groceryStockReadonlyWrap').hidden = true;
-    document.getElementById('groceryExistingSelect').value = '';
-    setGroceryAddMode('new');
-    updateGroceryContinueLink();
-    updateGroceryUnitUi();
+    document.getElementById('productStatus').value = 'active';
+    document.getElementById('productAddModeWrap').classList.remove('d-none');
+    document.getElementById('productStockReadonlyWrap').hidden = true;
+    document.getElementById('productExistingSelect').value = '';
+    setProductType(type || 'RICE');
+    setAddMode('new');
+    updateContinueLink();
   }
 
-  document.getElementById('riceModeNew').addEventListener('change', function () {
-    if (this.checked) setRiceAddMode('new');
+  function fillEdit(btn) {
+    const type = btn.getAttribute('data-product-type') || 'RICE';
+    const rice = type !== 'GROCERY';
+    setProductType(type);
+    setAddMode('new');
+
+    document.getElementById('productId').value = btn.getAttribute('data-id') || '';
+    document.getElementById('productName').value = btn.getAttribute('data-name') || '';
+    document.getElementById('productStatus').value = btn.getAttribute('data-status') || 'active';
+    document.getElementById('productAddModeWrap').classList.add('d-none');
+    document.getElementById('productModalLabel').textContent = rice ? 'Edit Rice' : 'Edit Other Item';
+    document.getElementById('productSubmitBtn').textContent = rice ? 'Update Rice' : 'Update Item';
+
+    if (rice) {
+      document.getElementById('riceCategory').value = btn.getAttribute('data-category') || '';
+      document.getElementById('riceKgPerSack').value = btn.getAttribute('data-kg-per-sack') || '25';
+      document.getElementById('riceSellingPrice').value = btn.getAttribute('data-selling-price') || '';
+      document.getElementById('riceSellingPriceSack').value = btn.getAttribute('data-selling-price-sack') || '';
+      document.getElementById('riceMinSacks').value = btn.getAttribute('data-min-sacks') || '1';
+      const stockKg = parseFloat(btn.getAttribute('data-stock')) || 0;
+      const sacks = parseFloat(btn.getAttribute('data-sacks')) || 0;
+      document.getElementById('productStockReadonly').textContent =
+        sacks.toFixed(2) + ' sack (' + stockKg.toFixed(2) + ' kg)';
+    } else {
+      document.getElementById('groceryCategory').value = btn.getAttribute('data-category') || '';
+      document.getElementById('groceryUnit').value = btn.getAttribute('data-unit') || 'pc';
+      document.getElementById('groceryMinStock').value = btn.getAttribute('data-min-stock') || '0';
+      document.getElementById('grocerySellingPrice').value = btn.getAttribute('data-selling-price') || '';
+      const unit = btn.getAttribute('data-unit') || 'pc';
+      const stock = parseFloat(btn.getAttribute('data-stock')) || 0;
+      const decimals = unit === 'pc' ? 0 : 2;
+      document.getElementById('productStockReadonly').textContent =
+        stock.toFixed(decimals) + ' ' + unit;
+      updateGroceryUnitUi();
+    }
+    document.getElementById('productStockReadonlyWrap').hidden = false;
+  }
+
+  document.getElementById('productModeNew').addEventListener('change', function () {
+    if (this.checked) setAddMode('new');
   });
-  document.getElementById('riceModeExisting').addEventListener('change', function () {
-    if (this.checked) setRiceAddMode('existing');
+  document.getElementById('productModeExisting').addEventListener('change', function () {
+    if (this.checked) setAddMode('existing');
   });
-  document.getElementById('groceryModeNew').addEventListener('change', function () {
-    if (this.checked) setGroceryAddMode('new');
-  });
-  document.getElementById('groceryModeExisting').addEventListener('change', function () {
-    if (this.checked) setGroceryAddMode('existing');
-  });
-  document.getElementById('riceExistingSelect').addEventListener('change', updateRiceContinueLink);
-  document.getElementById('groceryExistingSelect').addEventListener('change', updateGroceryContinueLink);
+  document.getElementById('productExistingSelect').addEventListener('change', updateContinueLink);
   document.getElementById('groceryUnit').addEventListener('change', updateGroceryUnitUi);
 
-  document.getElementById('btnAddRice').addEventListener('click', resetRiceForm);
-  document.getElementById('btnAddGrocery').addEventListener('click', resetGroceryForm);
-
-  document.querySelectorAll('.btn-edit-product').forEach(function (btn) {
-    btn.addEventListener('click', function () {
-      const isRice = (btn.dataset.productType || 'RICE') === 'RICE';
-      if (isRice) {
-        document.getElementById('riceProductId').value = btn.dataset.id;
-        document.getElementById('riceName').value = btn.dataset.name;
-        document.getElementById('riceCategory').value = btn.dataset.category;
-        document.getElementById('riceKgPerSack').value = btn.dataset.kgPerSack;
-        document.getElementById('riceSellingPrice').value = btn.dataset.sellingPrice;
-        document.getElementById('riceSellingPriceSack').value = btn.dataset.sellingPriceSack || '';
-        document.getElementById('riceMinSacks').value = btn.dataset.minSacks;
-        document.getElementById('riceStatus').value = btn.dataset.status;
-        document.getElementById('riceModalLabel').textContent = 'Edit Rice';
-        document.getElementById('riceSubmitBtn').textContent = 'Update Rice';
-        document.getElementById('riceAddModeWrap').classList.add('d-none');
-        setRiceAddMode('new');
-        const stockKg = parseFloat(btn.dataset.stock) || 0;
-        const sacks = parseFloat(btn.dataset.sacks) || 0;
-        document.getElementById('riceStockReadonly').textContent =
-          sacks.toFixed(2) + ' sack (' + stockKg.toFixed(2) + ' kg)';
-        document.getElementById('riceStockReadonlyWrap').hidden = false;
-        riceModal.show();
-      } else {
-        document.getElementById('groceryProductId').value = btn.dataset.id;
-        document.getElementById('groceryName').value = btn.dataset.name;
-        document.getElementById('groceryCategory').value = btn.dataset.category;
-        document.getElementById('groceryUnit').value = btn.dataset.unit || 'pc';
-        document.getElementById('groceryMinStock').value = btn.dataset.minStock || '0';
-        document.getElementById('grocerySellingPrice').value = btn.dataset.sellingPrice;
-        document.getElementById('groceryStatus').value = btn.dataset.status;
-        document.getElementById('groceryModalLabel').textContent = 'Edit Other Item';
-        document.getElementById('grocerySubmitBtn').textContent = 'Update Item';
-        document.getElementById('groceryAddModeWrap').classList.add('d-none');
-        setGroceryAddMode('new');
-        const unit = btn.dataset.unit || 'pc';
-        const stock = parseFloat(btn.dataset.stock) || 0;
-        const decimals = unit === 'pc' ? 0 : 2;
-        document.getElementById('groceryStockReadonly').textContent =
-          stock.toFixed(decimals) + ' ' + unit;
-        document.getElementById('groceryStockReadonlyWrap').hidden = false;
-        updateGroceryUnitUi();
-        groceryModal.show();
-      }
-    });
+  modalEl.addEventListener('show.bs.modal', function (event) {
+    const btn = event.relatedTarget;
+    const type = (btn && btn.getAttribute('data-product-type')) || 'RICE';
+    if (btn && btn.classList.contains('btn-edit-product')) {
+      fillEdit(btn);
+    } else {
+      resetForm(type);
+    }
   });
-
-  riceModalEl.addEventListener('hidden.bs.modal', resetRiceForm);
-  groceryModalEl.addEventListener('hidden.bs.modal', resetGroceryForm);
-  updateGroceryUnitUi();
+  modalEl.addEventListener('hidden.bs.modal', function () {
+    resetForm('RICE');
+  });
 });
 </script>
 

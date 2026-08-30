@@ -153,6 +153,51 @@ switch ($type) {
         }
         break;
 
+    case 'batch_profit':
+        require_once __DIR__ . '/stock_lots.php';
+        require_once __DIR__ . '/batch_profit.php';
+        fputcsv($out, [
+            'Batch ID',
+            'Batch Label',
+            'Mill Name',
+            'Product',
+            'Kind',
+            'Supplier',
+            'Purchased At',
+            'Invested',
+            'Sold Revenue',
+            'Sold Cost',
+            'Realized GP',
+            'GP %',
+            'Shrink Cost',
+            'Net After Shrink',
+            'Remaining Qty',
+            'Remaining Value',
+            'Status',
+        ]);
+        foreach (fetchBatchProfitRows($pdo, $from, $to) as $row) {
+            fputcsv($out, [
+                $row['id'],
+                $row['batch_label'],
+                $row['mill_name'] ?? '',
+                $row['product_name'],
+                $row['lot_kind'],
+                $row['supplier_name'] ?? '',
+                $row['purchased_at'],
+                $row['invested'],
+                $row['sold_revenue'],
+                $row['sold_cost'],
+                $row['realized_gp'],
+                round((float) $row['gp_pct'], 2),
+                $row['shrink_cost'],
+                $row['net_after_shrink'],
+                $row['remaining'],
+                $row['remaining_value'],
+                $row['status'],
+            ]);
+        }
+        break;
+
     case 'inventory':
         fputcsv($out, [
             'Product',

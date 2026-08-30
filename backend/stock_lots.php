@@ -21,6 +21,14 @@ function isLotLow(float $remaining): bool
     return $remaining >= LOT_NONE_THRESHOLD && $remaining < LOT_LOW_THRESHOLD;
 }
 
+/**
+ * @param array{
+ *   total_cost?:float|null,
+ *   weighed_kg?:float|null,
+ *   mill_name?:string|null,
+ *   lot_kind?:string
+ * } $options
+ */
 function createStockLot(
     PDO $pdo,
     int $productId,
@@ -28,7 +36,8 @@ function createStockLot(
     float $buyingPrice,
     string $purchasedAt,
     ?int $purchaseItemId = null,
-    ?string $notes = null
+    ?string $notes = null,
+    array $options = []
 ): int {
     $quantity = round($quantity, 2);
     $buyingPrice = round($buyingPrice, 2);
@@ -37,10 +46,26 @@ function createStockLot(
         throw new RuntimeException('lot_qty');
     }
 
+    $totalCost = array_key_exists('total_cost', $options) && $options['total_cost'] !== null
+        ? round((float) $options['total_cost'], 2)
+        : round($quantity * $buyingPrice, 2);
+    $weighedKg = array_key_exists('weighed_kg', $options) && $options['weighed_kg'] !== null
+        ? round((float) $options['weighed_kg'], 2)
+        : null;
+    $millName = isset($options['mill_name']) ? trim((string) $options['mill_name']) : null;
+    if ($millName === '') {
+        $millName = null;
+    }
+    $lotKind = trim((string) ($options['lot_kind'] ?? 'purchase'));
+    if ($lotKind === '') {
+        $lotKind = 'purchase';
+    }
+
     $stmt = $pdo->prepare(
         'INSERT INTO stock_lots
-         (product_id, purchase_item_id, buying_price, quantity_original, quantity_remaining, purchased_at, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?)'
+         (product_id, purchase_item_id, buying_price, quantity_original, quantity_remaining,
+          purchased_at, notes, mill_name, total_cost, weighed_kg, lot_kind)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     $stmt->execute([
         $productId,
@@ -50,6 +75,10 @@ function createStockLot(
         $quantity,
         $purchasedAt,
         $notes,
+        $millName,
+        $totalCost,
+        $weighedKg,
+        $lotKind,
     ]);
 
     return (int) $pdo->lastInsertId();
@@ -68,6 +97,10 @@ function deductStockLot(PDO $pdo, int $lotId, float $quantity): array
 
     if (!$lot) {
         throw new RuntimeException('lot_missing');
+    }
+
+    if (!empty($lot['closed_at'])) {
+        throw new RuntimeException('lot_closed');
     }
 
     $remaining = round((float) $lot['quantity_remaining'], 2);
@@ -106,7 +139,7 @@ function restoreStockLot(PDO $pdo, int $lotId, float $quantity): void
     }
 
     $stmt = $pdo->prepare(
-        'UPDATE stock_lots SET quantity_remaining = quantity_remaining + ? WHERE id = ?'
+        'UPDATE stock_lots SET quantity_remaining = quantity_remaining + ?, closed_at = NULL WHERE id = ?'
     );
     $stmt->execute([$quantity, $lotId]);
 
@@ -116,11 +149,11 @@ function restoreStockLot(PDO $pdo, int $lotId, float $quantity): void
 }
 
 /**
- * Zero out leftover on a batch (empty sack / waste) and reduce product stock.
+ * Zero out leftover on a batch (empty sack / waste / close) and reduce product stock.
  *
- * @return array{product_id:int, quantity:float, unit:string}
+ * @return array{product_id:int, quantity:float, unit:string, cost_amount:float, buying_price:float}
  */
-function writeOffStockLot(PDO $pdo, int $lotId): array
+function writeOffStockLot(PDO $pdo, int $lotId, bool $markClosed = true): array
 {
     $stmt = $pdo->prepare(
         'SELECT sl.*, p.unit, p.stock
@@ -147,9 +180,18 @@ function writeOffStockLot(PDO $pdo, int $lotId): array
         throw new RuntimeException('stock');
     }
 
-    $pdo->prepare(
-        'UPDATE stock_lots SET quantity_remaining = 0 WHERE id = ?'
-    )->execute([$lotId]);
+    $buyingPrice = (float) $lot['buying_price'];
+    $costAmount = round($remaining * $buyingPrice, 2);
+
+    if ($markClosed) {
+        $pdo->prepare(
+            'UPDATE stock_lots SET quantity_remaining = 0, closed_at = NOW() WHERE id = ?'
+        )->execute([$lotId]);
+    } else {
+        $pdo->prepare(
+            'UPDATE stock_lots SET quantity_remaining = 0 WHERE id = ?'
+        )->execute([$lotId]);
+    }
 
     $pdo->prepare(
         'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
@@ -159,6 +201,244 @@ function writeOffStockLot(PDO $pdo, int $lotId): array
         'product_id' => $productId,
         'quantity' => $remaining,
         'unit' => (string) ($lot['unit'] ?? 'kg'),
+        'cost_amount' => $costAmount,
+        'buying_price' => $buyingPrice,
+    ];
+}
+
+function recordLotWriteoff(
+    PDO $pdo,
+    int $lotId,
+    float $quantity,
+    float $costAmount,
+    string $reason,
+    ?string $movementReference = null
+): void {
+    $pdo->prepare(
+        'INSERT INTO stock_lot_writeoffs (stock_lot_id, quantity, cost_amount, reason, movement_reference)
+         VALUES (?, ?, ?, ?, ?)'
+    )->execute([
+        $lotId,
+        round($quantity, 2),
+        round($costAmount, 2),
+        $reason,
+        $movementReference,
+    ]);
+}
+
+/**
+ * Rename / relabel a batch (sell-facing note + optional mill/supplier name).
+ */
+function renameStockLot(PDO $pdo, int $lotId, string $notes, ?string $millName = null): void
+{
+    $notes = trim($notes);
+    $millName = $millName !== null ? trim($millName) : null;
+    if ($millName === '') {
+        $millName = null;
+    }
+
+    $stmt = $pdo->prepare(
+        'UPDATE stock_lots SET notes = ?, mill_name = ? WHERE id = ?'
+    );
+    $stmt->execute([
+        $notes !== '' ? $notes : null,
+        $millName,
+        $lotId,
+    ]);
+
+    if ($stmt->rowCount() === 0) {
+        $check = $pdo->prepare('SELECT id FROM stock_lots WHERE id = ?');
+        $check->execute([$lotId]);
+        if (!$check->fetch()) {
+            throw new RuntimeException('lot_missing');
+        }
+    }
+}
+
+/**
+ * Move an open batch to another sellable product (rebrand / rename destination).
+ */
+function reassignStockLot(PDO $pdo, int $lotId, int $newProductId): void
+{
+    $stmt = $pdo->prepare(
+        'SELECT sl.*, p.stock AS old_stock, p.status AS old_status
+         FROM stock_lots sl
+         INNER JOIN products p ON p.id = sl.product_id
+         WHERE sl.id = ?
+         FOR UPDATE'
+    );
+    $stmt->execute([$lotId]);
+    $lot = $stmt->fetch();
+
+    if (!$lot) {
+        throw new RuntimeException('lot_missing');
+    }
+
+    $remaining = round((float) $lot['quantity_remaining'], 2);
+    if ($remaining <= 0) {
+        throw new RuntimeException('lot_empty');
+    }
+
+    $oldProductId = (int) $lot['product_id'];
+    if ($oldProductId === $newProductId) {
+        return;
+    }
+
+    $newStmt = $pdo->prepare('SELECT id, stock, status, buying_price FROM products WHERE id = ? FOR UPDATE');
+    $newStmt->execute([$newProductId]);
+    $newProduct = $newStmt->fetch();
+
+    if (!$newProduct || ($newProduct['status'] ?? '') !== 'active') {
+        throw new RuntimeException('product');
+    }
+
+    $oldStock = round((float) $lot['old_stock'], 2);
+    if ($oldStock + 0.0001 < $remaining) {
+        throw new RuntimeException('stock');
+    }
+
+    $pdo->prepare('UPDATE stock_lots SET product_id = ? WHERE id = ?')
+        ->execute([$newProductId, $lotId]);
+
+    $pdo->prepare('UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?')
+        ->execute([$remaining, $oldProductId, $remaining]);
+
+    $pdo->prepare('UPDATE products SET stock = stock + ?, buying_price = ? WHERE id = ?')
+        ->execute([$remaining, (float) $lot['buying_price'], $newProductId]);
+}
+
+/**
+ * Blend source lots into a new sellable lot on the target product.
+ *
+ * @param list<array{lot_id:int, quantity:float}> $inputs
+ * @return array{mix_lot_id:int, quantity:float, total_cost:float, buying_price:float}
+ */
+function mixStockLots(
+    PDO $pdo,
+    int $outputProductId,
+    array $inputs,
+    string $batchLabel,
+    float $lossPercent = 0.0,
+    ?string $purchasedAt = null
+): array {
+    $batchLabel = trim($batchLabel);
+    if ($batchLabel === '') {
+        $batchLabel = 'Mix';
+    }
+    $lossPercent = max(0.0, min(50.0, $lossPercent));
+    $purchasedAt = $purchasedAt ?: date('Y-m-d');
+
+    $productStmt = $pdo->prepare(
+        'SELECT id, name, product_type, unit, status, stock FROM products WHERE id = ? FOR UPDATE'
+    );
+    $productStmt->execute([$outputProductId]);
+    $product = $productStmt->fetch();
+    if (!$product || ($product['status'] ?? '') !== 'active') {
+        throw new RuntimeException('product');
+    }
+
+    $normalized = [];
+    foreach ($inputs as $input) {
+        $lotId = (int) ($input['lot_id'] ?? 0);
+        $qty = round((float) ($input['quantity'] ?? 0), 2);
+        if ($lotId <= 0 || $qty <= 0) {
+            continue;
+        }
+        if (!isset($normalized[$lotId])) {
+            $normalized[$lotId] = 0.0;
+        }
+        $normalized[$lotId] = round($normalized[$lotId] + $qty, 2);
+    }
+
+    if (count($normalized) < 1) {
+        throw new RuntimeException('inputs');
+    }
+
+    $components = [];
+    $totalQtyIn = 0.0;
+    $totalCost = 0.0;
+
+    foreach ($normalized as $lotId => $qty) {
+        $lot = deductStockLot($pdo, $lotId, $qty);
+        $taken = (float) $lot['_deducted'];
+        $costAmount = round($taken * (float) $lot['buying_price'], 2);
+
+        $srcProductId = (int) $lot['product_id'];
+        $pdo->prepare(
+            'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
+        )->execute([$taken, $srcProductId, $taken]);
+
+        $components[] = [
+            'source_lot_id' => $lotId,
+            'quantity_used' => $taken,
+            'cost_amount' => $costAmount,
+            'source_product_id' => $srcProductId,
+        ];
+        $totalQtyIn = round($totalQtyIn + $taken, 2);
+        $totalCost = round($totalCost + $costAmount, 2);
+    }
+
+    if ($totalQtyIn <= 0 || $totalCost < 0) {
+        throw new RuntimeException('inputs');
+    }
+
+    $qtyOut = round($totalQtyIn * (1 - ($lossPercent / 100)), 2);
+    if ($qtyOut < LOT_NONE_THRESHOLD) {
+        throw new RuntimeException('loss');
+    }
+
+    $buyingPrice = round($totalCost / $qtyOut, 2);
+    if ($buyingPrice < 0) {
+        $buyingPrice = 0.0;
+    }
+
+    foreach ($components as &$comp) {
+        $comp['cost_share'] = $totalCost > 0
+            ? round($comp['cost_amount'] / $totalCost, 6)
+            : round(1 / count($components), 6);
+    }
+    unset($comp);
+
+    $mixLotId = createStockLot(
+        $pdo,
+        $outputProductId,
+        $qtyOut,
+        $buyingPrice,
+        $purchasedAt,
+        null,
+        $batchLabel,
+        [
+            'total_cost' => $totalCost,
+            'lot_kind' => 'mix',
+        ]
+    );
+
+    $compStmt = $pdo->prepare(
+        'INSERT INTO stock_lot_components
+         (mix_lot_id, source_lot_id, quantity_used, cost_amount, cost_share)
+         VALUES (?, ?, ?, ?, ?)'
+    );
+    foreach ($components as $comp) {
+        $compStmt->execute([
+            $mixLotId,
+            $comp['source_lot_id'],
+            $comp['quantity_used'],
+            $comp['cost_amount'],
+            $comp['cost_share'],
+        ]);
+    }
+
+    $pdo->prepare(
+        'UPDATE products SET stock = stock + ?, buying_price = ? WHERE id = ?'
+    )->execute([$qtyOut, $buyingPrice, $outputProductId]);
+
+    return [
+        'mix_lot_id' => $mixLotId,
+        'quantity' => $qtyOut,
+        'total_cost' => $totalCost,
+        'buying_price' => $buyingPrice,
+        'components' => $components,
+        'output_product_id' => $outputProductId,
     ];
 }
 
@@ -248,7 +528,7 @@ function fetchOpenLotsByProduct(PDO $pdo, ?int $extraQtySaleId = null): array
     $sql = 'SELECT sl.*, p.name AS product_name, p.product_type, p.unit, p.kg_per_sack
             FROM stock_lots sl
             INNER JOIN products p ON p.id = sl.product_id
-            WHERE sl.quantity_remaining > 0';
+            WHERE sl.quantity_remaining > 0 AND sl.closed_at IS NULL';
     $params = [];
 
     // When editing a sale, temporarily include qty still reserved on that sale's lots
@@ -262,6 +542,11 @@ function fetchOpenLotsByProduct(PDO $pdo, ?int $extraQtySaleId = null): array
                     sl.quantity_remaining + COALESCE(reserved.qty, 0) AS quantity_remaining,
                     sl.purchased_at,
                     sl.notes,
+                    sl.mill_name,
+                    sl.total_cost,
+                    sl.weighed_kg,
+                    sl.lot_kind,
+                    sl.closed_at,
                     sl.created_at,
                     p.name AS product_name,
                     p.product_type,
@@ -275,7 +560,8 @@ function fetchOpenLotsByProduct(PDO $pdo, ?int $extraQtySaleId = null): array
                     WHERE sale_id = ? AND stock_lot_id IS NOT NULL
                     GROUP BY stock_lot_id
                 ) reserved ON reserved.stock_lot_id = sl.id
-                WHERE (sl.quantity_remaining + COALESCE(reserved.qty, 0)) > 0';
+                WHERE (sl.quantity_remaining + COALESCE(reserved.qty, 0)) > 0
+                  AND (sl.closed_at IS NULL OR COALESCE(reserved.qty, 0) > 0)';
         $params[] = $extraQtySaleId;
     }
 
@@ -306,7 +592,8 @@ function syncProductLotsToStock(PDO $pdo, int $productId, float $targetStock, fl
     $buyingPrice = round($buyingPrice, 2);
 
     $sumStmt = $pdo->prepare(
-        'SELECT COALESCE(SUM(quantity_remaining), 0) FROM stock_lots WHERE product_id = ?'
+        'SELECT COALESCE(SUM(quantity_remaining), 0) FROM stock_lots
+         WHERE product_id = ? AND closed_at IS NULL'
     );
     $sumStmt->execute([$productId]);
     $current = round((float) $sumStmt->fetchColumn(), 2);
@@ -325,7 +612,8 @@ function syncProductLotsToStock(PDO $pdo, int $productId, float $targetStock, fl
             $buyingPrice,
             date('Y-m-d'),
             null,
-            'Product stock sync'
+            'Product stock sync',
+            ['lot_kind' => 'adjustment']
         );
         return;
     }
@@ -334,7 +622,7 @@ function syncProductLotsToStock(PDO $pdo, int $productId, float $targetStock, fl
     $need = abs($delta);
     $lotsStmt = $pdo->prepare(
         'SELECT id, quantity_remaining FROM stock_lots
-         WHERE product_id = ? AND quantity_remaining > 0
+         WHERE product_id = ? AND quantity_remaining > 0 AND closed_at IS NULL
          ORDER BY purchased_at ASC, id ASC
          FOR UPDATE'
     );
@@ -372,6 +660,8 @@ function formatLotLabel(array $lot): string
 
     $date = $lot['purchased_at'] ?? '';
     $batchNote = trim((string) ($lot['notes'] ?? ''));
+    $millName = trim((string) ($lot['mill_name'] ?? ''));
+    $lotKind = (string) ($lot['lot_kind'] ?? 'purchase');
     // Skip generic system notes in the leading label
     $skipNotes = ['Opening stock', 'Product stock sync'];
     $showBatch = $batchNote !== '' && !in_array($batchNote, $skipNotes, true)
@@ -382,6 +672,10 @@ function formatLotLabel(array $lot): string
         $statusPrefix = 'NONE · ';
     } elseif (isLotLow($remaining)) {
         $statusPrefix = 'LOW · ';
+    }
+
+    if ($lotKind === 'mix') {
+        $statusPrefix .= 'MIX · ';
     }
 
     if ($productType === 'RICE') {
@@ -396,8 +690,13 @@ function formatLotLabel(array $lot): string
             . ($date !== '' ? ' · ' . $date : '');
     }
 
-    if ($showBatch) {
-        return $statusPrefix . $batchNote . ' · ' . $core;
+    $lead = $showBatch ? $batchNote : '';
+    if ($millName !== '') {
+        $lead = $lead !== '' ? ($lead . ' (' . $millName . ')') : $millName;
+    }
+
+    if ($lead !== '') {
+        return $statusPrefix . $lead . ' · ' . $core;
     }
 
     return $statusPrefix . $core;

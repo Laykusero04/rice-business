@@ -125,6 +125,8 @@ if ($range === 'week') {
             SELECT MIN(expense_date) FROM expenses
             UNION ALL
             SELECT MIN(purchase_date) FROM purchases
+            UNION ALL
+            SELECT MIN(cashin_date) FROM gcash_cashins
          ) AS dates"
     )->fetchColumn();
     $chartFrom = $earliest ?: $today;
@@ -135,6 +137,7 @@ if ($range === 'week') {
 $salesByBucket = [];
 $expensesByBucket = [];
 $purchasesByBucket = [];
+$gcashFeesByBucket = [];
 
 if ($chartGrain === 'daily') {
     $salesStmt = $pdo->prepare(
@@ -154,6 +157,12 @@ if ($chartGrain === 'daily') {
          FROM purchases
          WHERE purchase_date BETWEEN ? AND ?
          GROUP BY purchase_date'
+    );
+    $gcashFeesStmt = $pdo->prepare(
+        'SELECT cashin_date AS bucket, COALESCE(SUM(fee_charged), 0) AS total
+         FROM gcash_cashins
+         WHERE cashin_date BETWEEN ? AND ?
+         GROUP BY cashin_date'
     );
 } else {
     $salesStmt = $pdo->prepare(
@@ -177,6 +186,13 @@ if ($chartGrain === 'daily') {
          GROUP BY DATE_FORMAT(purchase_date, '%Y-%m')
          ORDER BY bucket ASC"
     );
+    $gcashFeesStmt = $pdo->prepare(
+        "SELECT DATE_FORMAT(cashin_date, '%Y-%m') AS bucket, COALESCE(SUM(fee_charged), 0) AS total
+         FROM gcash_cashins
+         WHERE cashin_date BETWEEN ? AND ?
+         GROUP BY DATE_FORMAT(cashin_date, '%Y-%m')
+         ORDER BY bucket ASC"
+    );
 }
 
 $salesStmt->execute([$chartFrom, $chartTo]);
@@ -191,11 +207,20 @@ $purchasesStmt->execute([$chartFrom, $chartTo]);
 foreach ($purchasesStmt->fetchAll() as $row) {
     $purchasesByBucket[$row['bucket']] = (float) $row['total'];
 }
+try {
+    $gcashFeesStmt->execute([$chartFrom, $chartTo]);
+    foreach ($gcashFeesStmt->fetchAll() as $row) {
+        $gcashFeesByBucket[$row['bucket']] = (float) $row['total'];
+    }
+} catch (PDOException $e) {
+    // ignore if gcash_cashins table is missing
+}
 
 $chartLabels = [];
 $chartSales = [];
 $chartExpenses = [];
 $chartPurchases = [];
+$chartGcashFees = [];
 
 if ($chartGrain === 'daily') {
     $cursor = strtotime($chartFrom);
@@ -206,6 +231,7 @@ if ($chartGrain === 'daily') {
         $chartSales[] = $salesByBucket[$key] ?? 0.0;
         $chartExpenses[] = $expensesByBucket[$key] ?? 0.0;
         $chartPurchases[] = $purchasesByBucket[$key] ?? 0.0;
+        $chartGcashFees[] = $gcashFeesByBucket[$key] ?? 0.0;
         $cursor = strtotime('+1 day', $cursor);
     }
 } else {
@@ -217,6 +243,7 @@ if ($chartGrain === 'daily') {
         $chartSales[] = $salesByBucket[$key] ?? 0.0;
         $chartExpenses[] = $expensesByBucket[$key] ?? 0.0;
         $chartPurchases[] = $purchasesByBucket[$key] ?? 0.0;
+        $chartGcashFees[] = $gcashFeesByBucket[$key] ?? 0.0;
         $cursor = strtotime('+1 month', $cursor);
     }
 }
@@ -300,7 +327,7 @@ require __DIR__ . '/includes/header.php';
   <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
     <div>
       <h2 class="h6 mb-0">Sales vs Money Out</h2>
-      <p class="small text-muted mb-0"><?= htmlspecialchars($rangeLabel) ?> · Sales, Expenses &amp; Purchases</p>
+      <p class="small text-muted mb-0"><?= htmlspecialchars($rangeLabel) ?> · Sales, GCash fees, Expenses &amp; Purchases</p>
     </div>
     <div class="d-flex flex-wrap align-items-center gap-2">
       <div class="btn-group btn-group-sm" role="group" aria-label="Chart range">
@@ -556,6 +583,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const labels = <?= json_encode($chartLabels, JSON_UNESCAPED_UNICODE) ?>;
   const sales = <?= json_encode($chartSales) ?>;
+  const gcashFees = <?= json_encode($chartGcashFees) ?>;
   const expenses = <?= json_encode($chartExpenses) ?>;
   const purchases = <?= json_encode($chartPurchases) ?>;
 
@@ -568,6 +596,12 @@ document.addEventListener('DOMContentLoaded', function () {
           label: 'Sales',
           data: sales,
           backgroundColor: 'rgba(45, 106, 79, 0.75)',
+          borderRadius: 4
+        },
+        {
+          label: 'GCash fees',
+          data: gcashFees,
+          backgroundColor: 'rgba(13, 110, 253, 0.7)',
           borderRadius: 4
         },
         {

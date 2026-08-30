@@ -24,7 +24,7 @@ $referenceNo = trim($_POST['reference_no'] ?? '');
 $notes = trim($_POST['notes'] ?? '');
 
 $redirect = $isEdit
-    ? '/rice-business/frontend/gcash_edit.php?id=' . $id
+    ? '/rice-business/frontend/gcash_new.php?id=' . $id
     : '/rice-business/frontend/gcash_new.php';
 
 if ($cashinDate === '' || $cashinAmount <= 0 || $feeCharged < 0) {

@@ -19,7 +19,15 @@ $navItems = [
         ],
     ],
     ['id' => 'products', 'label' => 'Products', 'icon' => 'bi-box-seam', 'href' => 'products.php'],
-    ['id' => 'inventory', 'label' => 'Inventory', 'icon' => 'bi-clipboard-data', 'href' => 'inventory.php'],
+    [
+        'id' => 'inventory',
+        'label' => 'Inventory',
+        'icon' => 'bi-clipboard-data',
+        'children' => [
+            ['id' => 'inventory', 'label' => 'Stock & Batches', 'href' => 'inventory.php'],
+            ['id' => 'mix', 'label' => 'Mix Rice', 'href' => 'mix.php'],
+        ],
+    ],
     [
         'id' => 'purchases',
         'label' => 'Purchases',

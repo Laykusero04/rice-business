@@ -241,7 +241,7 @@ try {
         'SELECT id, name, unit, stock FROM products WHERE id = ? AND status = ? FOR UPDATE'
     );
     $stockStmt = $pdo->prepare(
-        'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
+        'UPDATE products SET stock = GREATEST(0, stock - ?) WHERE id = ?'
     );
     $movementStmt = $pdo->prepare(
         'INSERT INTO stock_movements (product_id, type, quantity, reference, notes)
@@ -264,25 +264,15 @@ try {
             }
         }
 
-        if ((float) $product['stock'] + LOT_NONE_THRESHOLD + 0.0001 < $item['quantity']) {
-            throw new RuntimeException('stock:' . $product['name']);
-        }
-
         $lot = deductStockLot($pdo, (int) $item['stock_lot_id'], (float) $item['quantity']);
 
         if ((int) $lot['product_id'] !== (int) $item['product_id']) {
             throw new RuntimeException('lot_mismatch');
         }
 
-        // Use actual deducted qty when tiny overshoot was clamped to batch remaining
+        // Keep the sold qty as entered (tingi); soft lot deduct must not shrink the bill.
         $requestedQty = round((float) $item['quantity'], 2);
-        $deductedQty = isset($lot['_deducted'])
-            ? round((float) $lot['_deducted'], 2)
-            : $requestedQty;
-        $item['quantity'] = $deductedQty;
-        if (abs($deductedQty - $requestedQty) > 0.001) {
-            $item['subtotal'] = round($deductedQty * (float) $item['price'], 2);
-        }
+        $item['quantity'] = $requestedQty;
 
         $costPrice = round((float) $lot['buying_price'], 2);
 
@@ -296,14 +286,14 @@ try {
             $item['subtotal'],
         ]);
 
-        $stockStmt->execute([
-            $item['quantity'],
-            $item['product_id'],
-            $item['quantity'],
-        ]);
-
-        if ($stockStmt->rowCount() === 0) {
-            throw new RuntimeException('stock:' . $product['name']);
+        $stockTaken = isset($lot['_stock_taken'])
+            ? round((float) $lot['_stock_taken'], 2)
+            : $requestedQty;
+        if ($stockTaken > 0) {
+            $stockStmt->execute([
+                $stockTaken,
+                $item['product_id'],
+            ]);
         }
 
         $movementNote = $isLend

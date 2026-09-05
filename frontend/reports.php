@@ -75,8 +75,11 @@ $totalInvested = 0.0;
 $totalBatchRevenue = 0.0;
 $totalBatchCogs = 0.0;
 $totalBatchGp = 0.0;
+$totalMoneyGp = 0.0;
 $totalShrink = 0.0;
 $totalRemaining = 0.0;
+$totalLeakageKg = 0.0;
+$totalLeakageCost = 0.0;
 
 if ($tab === 'batch') {
     require_once __DIR__ . '/../backend/batch_profit.php';
@@ -97,6 +100,9 @@ if ($tab === 'batch') {
     foreach ($batchRows as $row) {
         if (empty($row['is_mix'])) {
             $totalInvested += (float) $row['invested'];
+            $totalMoneyGp += (float) ($row['money_gp'] ?? $row['realized_gp']);
+            $totalLeakageKg += (float) ($row['leakage_kg'] ?? 0);
+            $totalLeakageCost += (float) ($row['leakage_cost'] ?? 0);
         }
         $totalBatchRevenue += (float) $row['sold_revenue'];
         $totalBatchCogs += (float) $row['sold_cost'];
@@ -594,10 +600,17 @@ require __DIR__ . '/includes/header.php';
 </p>
 
 <?php if ($tab === 'batch'): ?>
+<p class="small text-muted mb-3">
+  <strong>Profit</strong> = sales ₱ − cost used.
+  <strong>Leakage</strong> = kg that left stock beyond what you billed
+  (started − left − sold billed). That is over-pours / giveaways.
+  When the sack is physically empty but the system still shows leftover, use
+  <strong>Mark empty</strong> on the purchase page so leftover becomes write-off loss.
+</p>
 <div class="row g-3 mb-4">
   <div class="col-md-2">
     <div class="bg-white rounded shadow-sm p-3 h-100">
-      <div class="text-muted small">Invested (source)</div>
+      <div class="text-muted small">Invested</div>
       <div class="fs-5 fw-bold">₱<?= number_format($totalInvested, 2) ?></div>
     </div>
   </div>
@@ -609,21 +622,22 @@ require __DIR__ . '/includes/header.php';
   </div>
   <div class="col-md-2">
     <div class="bg-white rounded shadow-sm p-3 h-100">
-      <div class="text-muted small">Sold cost</div>
-      <div class="fs-5 fw-bold">₱<?= number_format($totalBatchCogs, 2) ?></div>
-    </div>
-  </div>
-  <div class="col-md-2">
-    <div class="bg-white rounded shadow-sm p-3 h-100">
-      <div class="text-muted small">Realized GP</div>
-      <div class="fs-5 fw-bold <?= $totalBatchGp >= 0 ? 'text-success' : 'text-danger' ?>">
-        ₱<?= number_format($totalBatchGp, 2) ?>
+      <div class="text-muted small">Money profit</div>
+      <div class="fs-5 fw-bold <?= $totalMoneyGp >= 0 ? 'text-success' : 'text-danger' ?>">
+        ₱<?= number_format($totalMoneyGp, 2) ?>
       </div>
     </div>
   </div>
   <div class="col-md-2">
     <div class="bg-white rounded shadow-sm p-3 h-100">
-      <div class="text-muted small">Shrink loss</div>
+      <div class="text-muted small">Leakage</div>
+      <div class="fs-5 fw-bold text-danger">₱<?= number_format($totalLeakageCost, 2) ?></div>
+      <div class="small text-muted"><?= number_format($totalLeakageKg, 2) ?> kg over billed</div>
+    </div>
+  </div>
+  <div class="col-md-2">
+    <div class="bg-white rounded shadow-sm p-3 h-100">
+      <div class="text-muted small">Write-off / empty</div>
       <div class="fs-5 fw-bold text-danger">₱<?= number_format($totalShrink, 2) ?></div>
     </div>
   </div>
@@ -639,16 +653,14 @@ require __DIR__ . '/includes/header.php';
   <table class="table table-sm table-hover align-middle mb-0">
     <thead class="table-light">
       <tr>
-        <th>Batch</th>
+        <th>Sell batch</th>
+        <th>Purchase batch</th>
         <th>Product</th>
-        <th>Supplier</th>
-        <th>Date</th>
-        <th class="text-end">Invested</th>
+        <th class="text-end">Started</th>
+        <th class="text-end">Sold kg</th>
+        <th class="text-end">Leakage</th>
         <th class="text-end">Sold ₱</th>
-        <th class="text-end">Sold cost</th>
-        <th class="text-end">GP</th>
-        <th class="text-end">Shrink</th>
-        <th class="text-end">Net</th>
+        <th class="text-end">Profit</th>
         <th class="text-end">Left</th>
         <th>Status</th>
       </tr>
@@ -656,7 +668,7 @@ require __DIR__ . '/includes/header.php';
     <tbody>
       <?php if (count($batchRows) === 0): ?>
         <tr>
-          <td colspan="12" class="text-center text-muted py-4">No batches found for this filter.</td>
+          <td colspan="10" class="text-center text-muted py-4">No batches found for this filter.</td>
         </tr>
       <?php else: ?>
         <?php foreach ($batchRows as $row): ?>
@@ -668,6 +680,15 @@ require __DIR__ . '/includes/header.php';
                 'Crumb' => 'text-bg-dark',
                 default => 'text-bg-success',
             };
+            $moneyGp = (float) ($row['money_gp'] ?? $row['realized_gp']);
+            $moneyPct = (float) ($row['money_gp_pct'] ?? $row['gp_pct']);
+            $leakKg = (float) ($row['leakage_kg'] ?? 0);
+            $leakCost = (float) ($row['leakage_cost'] ?? 0);
+            $kgPerSack = (float) ($row['kg_per_sack'] ?? 25);
+            if ($kgPerSack <= 0) {
+                $kgPerSack = 25;
+            }
+            $startedSacks = $unit === 'kg' ? round(((float) ($row['started_qty'] ?? 0)) / $kgPerSack, 2) : (float) ($row['started_qty'] ?? 0);
           ?>
           <tr>
             <td>
@@ -677,24 +698,36 @@ require __DIR__ . '/includes/header.php';
                 <?php endif; ?>
                 <?= htmlspecialchars($row['batch_label']) ?>
               </div>
-              <?php if (!empty($row['mill_name'])): ?>
-                <div class="small text-muted"><?= htmlspecialchars($row['mill_name']) ?></div>
-              <?php endif; ?>
               <div class="small text-muted">#<?= (int) $row['id'] ?></div>
             </td>
-            <td><?= htmlspecialchars($row['product_name']) ?></td>
-            <td class="small"><?= htmlspecialchars($row['supplier_name'] ?? '—') ?></td>
-            <td class="small"><?= htmlspecialchars($row['purchased_at']) ?></td>
-            <td class="text-end">₱<?= number_format((float) $row['invested'], 2) ?></td>
-            <td class="text-end">₱<?= number_format((float) $row['sold_revenue'], 2) ?></td>
-            <td class="text-end">₱<?= number_format((float) $row['sold_cost'], 2) ?></td>
-            <td class="text-end fw-semibold <?= (float) $row['realized_gp'] >= 0 ? 'text-success' : 'text-danger' ?>">
-              ₱<?= number_format((float) $row['realized_gp'], 2) ?>
-              <div class="small text-muted"><?= number_format((float) $row['gp_pct'], 1) ?>%</div>
+            <td class="small">
+              <?= htmlspecialchars($row['purchase_batch_label'] ?? '—') ?>
+              <?php if (!empty($row['supplier_name'])): ?>
+                <div class="text-muted"><?= htmlspecialchars($row['supplier_name']) ?></div>
+              <?php endif; ?>
             </td>
-            <td class="text-end text-danger">₱<?= number_format((float) $row['shrink_cost'], 2) ?></td>
-            <td class="text-end fw-semibold <?= (float) $row['net_after_shrink'] >= 0 ? 'text-success' : 'text-danger' ?>">
-              ₱<?= number_format((float) $row['net_after_shrink'], 2) ?>
+            <td><?= htmlspecialchars($row['product_name']) ?></td>
+            <td class="text-end small">
+              <?php if ($unit === 'kg'): ?>
+                <?= number_format($startedSacks, 2) ?> sack<?= abs($startedSacks - 1.0) < 0.001 ? '' : 's' ?>
+                <div class="text-muted"><?= number_format((float) ($row['started_qty'] ?? 0), 2) ?> kg</div>
+              <?php else: ?>
+                <?= number_format((float) ($row['started_qty'] ?? 0), 2) ?> <?= htmlspecialchars($unit) ?>
+              <?php endif; ?>
+            </td>
+            <td class="text-end"><?= number_format((float) ($row['sold_qty'] ?? 0), 2) ?></td>
+            <td class="text-end <?= $leakKg > 0 ? 'text-danger' : 'text-muted' ?>">
+              <?php if ($leakKg > 0): ?>
+                <?= number_format($leakKg, 2) ?> kg
+                <div class="small">₱<?= number_format($leakCost, 2) ?></div>
+              <?php else: ?>
+                —
+              <?php endif; ?>
+            </td>
+            <td class="text-end">₱<?= number_format((float) $row['sold_revenue'], 2) ?></td>
+            <td class="text-end fw-semibold <?= $moneyGp >= 0 ? 'text-success' : 'text-danger' ?>">
+              ₱<?= number_format($moneyGp, 2) ?>
+              <div class="small text-muted"><?= number_format($moneyPct, 1) ?>%</div>
             </td>
             <td class="text-end">
               <?= number_format((float) $row['remaining'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>

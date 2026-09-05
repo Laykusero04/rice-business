@@ -29,6 +29,83 @@ function isLotLow(float $remaining): bool
  *   lot_kind?:string
  * } $options
  */
+/**
+ * Return the next global label (Batch-N).
+ * One label per purchase (whole buy), shared by all product lines.
+ * Call inside an open transaction. Does not run DDL (avoids implicit commit).
+ */
+function allocateNextBatchLabel(PDO $pdo): string
+{
+    $row = $pdo->query('SELECT next_batch_no FROM batch_counters WHERE id = 1 FOR UPDATE')->fetch();
+    if (!$row) {
+        $maxStmt = $pdo->query(
+            "SELECT COALESCE(MAX(
+                CASE
+                  WHEN batch_label REGEXP '^Batch-[0-9]+$' THEN CAST(SUBSTRING(batch_label, 7) AS UNSIGNED)
+                  ELSE 0
+                END
+             ), 0) AS max_no
+             FROM purchases"
+        );
+        $maxNo = (int) ($maxStmt->fetch()['max_no'] ?? 0);
+        $start = $maxNo + 1;
+        $pdo->prepare('INSERT INTO batch_counters (id, next_batch_no) VALUES (1, ?)')
+            ->execute([$start + 1]);
+        return 'Batch-' . $start;
+    }
+
+    $current = (int) $row['next_batch_no'];
+    if ($current < 1) {
+        $current = 1;
+    }
+    $pdo->prepare('UPDATE batch_counters SET next_batch_no = ? WHERE id = 1')
+        ->execute([$current + 1]);
+
+    return 'Batch-' . $current;
+}
+
+/**
+ * Preview next Batch-N without consuming the counter.
+ */
+function peekNextBatchLabel(PDO $pdo): string
+{
+    try {
+        $row = $pdo->query('SELECT next_batch_no FROM batch_counters WHERE id = 1')->fetch();
+        $n = $row ? max(1, (int) $row['next_batch_no']) : 1;
+    } catch (PDOException $e) {
+        $n = 1;
+    }
+
+    return 'Batch-' . $n;
+}
+
+/**
+ * Optional: which sell product this purchase is intended for.
+ */
+function ensurePurchaseForProductColumn(PDO $pdo): void
+{
+    static $ready = false;
+    if ($ready) {
+        return;
+    }
+    try {
+        $pdo->query('SELECT for_product_id FROM purchases LIMIT 1');
+        $ready = true;
+        return;
+    } catch (PDOException $e) {
+        // missing
+    }
+    try {
+        $pdo->exec(
+            'ALTER TABLE purchases
+             ADD COLUMN for_product_id INT UNSIGNED NULL AFTER batch_label'
+        );
+    } catch (PDOException $e) {
+        // concurrent
+    }
+    $ready = true;
+}
+
 function createStockLot(
     PDO $pdo,
     int $productId,
@@ -105,28 +182,26 @@ function deductStockLot(PDO $pdo, int $lotId, float $quantity): array
 
     $remaining = round((float) $lot['quantity_remaining'], 2);
 
-    // Tiny overshoot from peso→kg rounding: use exact remaining
-    if ($quantity > $remaining && ($quantity - $remaining) <= LOT_NONE_THRESHOLD + 0.0001) {
-        $quantity = $remaining;
-    }
+    // Soft deduct: tingi kg is often inaccurate — never block the sale.
+    // Reduce remaining when possible; keep sale qty as requested for money.
+    $take = $remaining > 0 ? min($quantity, $remaining) : 0.0;
+    $take = round($take, 2);
 
-    if ($remaining + 0.0001 < $quantity || $quantity <= 0) {
-        throw new RuntimeException('lot_stock');
-    }
-
-    $update = $pdo->prepare(
-        'UPDATE stock_lots
-         SET quantity_remaining = quantity_remaining - ?
-         WHERE id = ? AND quantity_remaining >= ?'
-    );
-    $update->execute([$quantity, $lotId, $quantity]);
-
-    if ($update->rowCount() === 0) {
-        throw new RuntimeException('lot_stock');
+    if ($take > 0) {
+        $update = $pdo->prepare(
+            'UPDATE stock_lots
+             SET quantity_remaining = quantity_remaining - ?
+             WHERE id = ? AND quantity_remaining >= ?'
+        );
+        $update->execute([$take, $lotId, $take]);
+        if ($update->rowCount() === 0) {
+            $take = 0.0;
+        }
     }
 
     $lot['quantity_remaining'] = $remaining;
     $lot['_deducted'] = $quantity;
+    $lot['_stock_taken'] = $take;
 
     return $lot;
 }
@@ -525,10 +600,11 @@ function reversePurchaseLots(PDO $pdo, array $purchaseItems): void
  */
 function fetchOpenLotsByProduct(PDO $pdo, ?int $extraQtySaleId = null): array
 {
+    // Include empty batches too — tingi leftovers are unreliable; batch is the sell unit of work.
     $sql = 'SELECT sl.*, p.name AS product_name, p.product_type, p.unit, p.kg_per_sack
             FROM stock_lots sl
             INNER JOIN products p ON p.id = sl.product_id
-            WHERE sl.quantity_remaining > 0 AND sl.closed_at IS NULL';
+            WHERE sl.closed_at IS NULL';
     $params = [];
 
     // When editing a sale, temporarily include qty still reserved on that sale's lots
@@ -560,8 +636,7 @@ function fetchOpenLotsByProduct(PDO $pdo, ?int $extraQtySaleId = null): array
                     WHERE sale_id = ? AND stock_lot_id IS NOT NULL
                     GROUP BY stock_lot_id
                 ) reserved ON reserved.stock_lot_id = sl.id
-                WHERE (sl.quantity_remaining + COALESCE(reserved.qty, 0)) > 0
-                  AND (sl.closed_at IS NULL OR COALESCE(reserved.qty, 0) > 0)';
+                WHERE sl.closed_at IS NULL OR COALESCE(reserved.qty, 0) > 0';
         $params[] = $extraQtySaleId;
     }
 
@@ -645,11 +720,10 @@ function syncProductLotsToStock(PDO $pdo, int $productId, float $targetStock, fl
 }
 
 /**
- * Human-readable batch label for UI (sack price for rice).
+ * Human-readable batch label for UI — batch name first; kg left is approximate only.
  */
 function formatLotLabel(array $lot): string
 {
-    $remaining = round((float) $lot['quantity_remaining'], 2);
     $buyingPrice = (float) $lot['buying_price'];
     $unit = $lot['unit'] ?? 'kg';
     $productType = $lot['product_type'] ?? 'RICE';
@@ -661,43 +735,179 @@ function formatLotLabel(array $lot): string
     $date = $lot['purchased_at'] ?? '';
     $batchNote = trim((string) ($lot['notes'] ?? ''));
     $millName = trim((string) ($lot['mill_name'] ?? ''));
-    $lotKind = (string) ($lot['lot_kind'] ?? 'purchase');
-    // Skip generic system notes in the leading label
     $skipNotes = ['Opening stock', 'Product stock sync'];
     $showBatch = $batchNote !== '' && !in_array($batchNote, $skipNotes, true)
         && !preg_match('/^Purchase #\d+$/', $batchNote);
 
-    $statusPrefix = '';
-    if (isLotUnsalable($remaining)) {
-        $statusPrefix = 'NONE · ';
-    } elseif (isLotLow($remaining)) {
-        $statusPrefix = 'LOW · ';
+    $lead = $showBatch ? $batchNote : ('Batch #' . (int) ($lot['id'] ?? 0));
+    if ($millName !== '') {
+        $lead .= ' (' . $millName . ')';
     }
 
-    if ($lotKind === 'mix') {
-        $statusPrefix .= 'MIX · ';
-    }
+    $remaining = round((float) ($lot['quantity_remaining'] ?? 0), 2);
 
     if ($productType === 'RICE') {
+        $sacksLeft = $kgPerSack > 0 ? round($remaining / $kgPerSack, 2) : $remaining;
         $sackPrice = round($buyingPrice * $kgPerSack, 2);
-        $qtyLabel = number_format($remaining, 2) . ' kg left';
-        $core = '₱' . number_format($sackPrice, 2) . '/sack · ' . $qtyLabel
+        $core = number_format($sacksLeft, 2) . ' sack'
+            . ($sacksLeft == 1.0 ? '' : 's')
+            . ' · ₱' . number_format($sackPrice, 2) . '/sack'
             . ($date !== '' ? ' · ' . $date : '');
     } else {
-        $decimals = $unit === 'pc' ? 0 : 2;
-        $core = '₱' . number_format($buyingPrice, 2) . '/' . $unit . ' · '
-            . number_format($remaining, $decimals) . ' ' . $unit . ' left'
+        $core = number_format($remaining, 2) . ' ' . $unit
+            . ' · ₱' . number_format($buyingPrice, 2) . '/' . $unit
             . ($date !== '' ? ' · ' . $date : '');
     }
 
-    $lead = $showBatch ? $batchNote : '';
-    if ($millName !== '') {
-        $lead = $lead !== '' ? ($lead . ' (' . $millName . ')') : $millName;
+    return $lead . ' · ' . $core;
+}
+
+/**
+ * Ensure stock_lots.source_purchase_id exists (links sell batch → purchase).
+ * Run outside an open transaction (DDL can commit).
+ */
+function ensureSourcePurchaseColumn(PDO $pdo): void
+{
+    static $ready = false;
+    if ($ready) {
+        return;
+    }
+    try {
+        $pdo->query('SELECT source_purchase_id FROM stock_lots LIMIT 1');
+        $ready = true;
+        return;
+    } catch (PDOException $e) {
+        // Column missing — add it.
+    }
+    try {
+        $pdo->exec(
+            'ALTER TABLE stock_lots
+             ADD COLUMN source_purchase_id INT UNSIGNED NULL AFTER purchase_item_id'
+        );
+    } catch (PDOException $e) {
+        // Concurrent add or already exists.
+    }
+    $ready = true;
+}
+
+/**
+ * Purchases available to fund a sell batch, with cost still free to allocate.
+ *
+ * @return list<array{id:int,batch_label:string,purchase_date:string,total:float,allocated:float,remaining_cost:float,supplier_name:?string,label:string}>
+ */
+function fetchPurchaseBatchesForSelect(PDO $pdo): array
+{
+    ensureSourcePurchaseColumn($pdo);
+
+    $rows = $pdo->query(
+        "SELECT p.id,
+                COALESCE(NULLIF(TRIM(p.batch_label), ''), CONCAT('Purchase #', p.id)) AS batch_label,
+                p.purchase_date,
+                p.total,
+                s.name AS supplier_name,
+                COALESCE((
+                  SELECT SUM(sl.total_cost)
+                  FROM stock_lots sl
+                  WHERE sl.source_purchase_id = p.id
+                    AND sl.total_cost IS NOT NULL
+                ), 0) AS allocated
+         FROM purchases p
+         LEFT JOIN suppliers s ON s.id = p.supplier_id
+         ORDER BY p.id DESC
+         LIMIT 100"
+    )->fetchAll();
+
+    $out = [];
+    foreach ($rows as $row) {
+        $total = round((float) $row['total'], 2);
+        $allocated = round((float) $row['allocated'], 2);
+        $remaining = round(max(0, $total - $allocated), 2);
+        $batchLabel = (string) $row['batch_label'];
+        $supplier = $row['supplier_name'] ?? null;
+        $label = $batchLabel
+            . ' · ' . ($row['purchase_date'] ?? '')
+            . ' · ₱' . number_format($total, 2)
+            . ($supplier ? ' · ' . $supplier : '')
+            . ' · left ₱' . number_format($remaining, 2);
+
+        $out[] = [
+            'id' => (int) $row['id'],
+            'batch_label' => $batchLabel,
+            'purchase_date' => (string) ($row['purchase_date'] ?? ''),
+            'total' => $total,
+            'allocated' => $allocated,
+            'remaining_cost' => $remaining,
+            'supplier_name' => $supplier,
+            'label' => $label,
+        ];
     }
 
-    if ($lead !== '') {
-        return $statusPrefix . $lead . ' · ' . $core;
+    return $out;
+}
+
+/**
+ * Create a sellable batch on a product. Quantity is in kg (or product unit).
+ */
+function createSellBatch(
+    PDO $pdo,
+    int $productId,
+    float $buyingPrice = 0.0,
+    ?string $notes = null,
+    ?string $purchasedAt = null,
+    float $quantity = 0.0,
+    float $totalCost = 0.0,
+    ?int $sourcePurchaseId = null
+): int {
+    ensureSourcePurchaseColumn($pdo);
+
+    $buyingPrice = round($buyingPrice, 2);
+    if ($buyingPrice < 0) {
+        $buyingPrice = 0.0;
+    }
+    $quantity = round($quantity, 2);
+    if ($quantity < 0) {
+        $quantity = 0.0;
+    }
+    $totalCost = round($totalCost, 2);
+    if ($totalCost < 0) {
+        $totalCost = 0.0;
+    }
+    $notes = $notes !== null ? trim($notes) : '';
+    if ($notes === '') {
+        $notes = allocateNextBatchLabel($pdo);
+    }
+    $purchasedAt = $purchasedAt !== null && $purchasedAt !== ''
+        ? $purchasedAt
+        : date('Y-m-d');
+
+    $sourcePurchaseId = $sourcePurchaseId !== null && $sourcePurchaseId > 0
+        ? $sourcePurchaseId
+        : null;
+
+    $stmt = $pdo->prepare(
+        'INSERT INTO stock_lots
+         (product_id, purchase_item_id, source_purchase_id, buying_price, quantity_original, quantity_remaining,
+          purchased_at, notes, mill_name, total_cost, weighed_kg, lot_kind)
+         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, \'opening\')'
+    );
+    $stmt->execute([
+        $productId,
+        $sourcePurchaseId,
+        $buyingPrice,
+        $quantity,
+        $quantity,
+        $purchasedAt,
+        $notes,
+        $totalCost,
+    ]);
+
+    $lotId = (int) $pdo->lastInsertId();
+
+    if ($quantity > 0) {
+        $pdo->prepare(
+            'UPDATE products SET stock = stock + ?, buying_price = CASE WHEN ? > 0 THEN ? ELSE buying_price END WHERE id = ?'
+        )->execute([$quantity, $buyingPrice, $buyingPrice, $productId]);
     }
 
-    return $statusPrefix . $core;
+    return $lotId;
 }

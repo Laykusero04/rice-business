@@ -5,22 +5,28 @@
  * Direct sales + mix-attributed sales + write-off shrink.
  */
 
+require_once __DIR__ . '/stock_lots.php';
+
 /**
  * @return list<array<string, mixed>>
  */
 function fetchBatchProfitRows(PDO $pdo, ?string $from = null, ?string $to = null): array
 {
+    ensureSourcePurchaseColumn($pdo);
+
     $lots = $pdo->query(
         'SELECT sl.*,
                 p.name AS product_name,
                 p.product_type,
                 p.unit,
                 p.kg_per_sack,
-                s.name AS supplier_name
+                s.name AS supplier_name,
+                COALESCE(NULLIF(TRIM(pu.batch_label), \'\'), CONCAT(\'Purchase #\', pu.id)) AS purchase_batch_label,
+                pu.total AS purchase_total
          FROM stock_lots sl
          INNER JOIN products p ON p.id = sl.product_id
          LEFT JOIN purchase_items pi ON pi.id = sl.purchase_item_id
-         LEFT JOIN purchases pu ON pu.id = pi.purchase_id
+         LEFT JOIN purchases pu ON pu.id = COALESCE(sl.source_purchase_id, pi.purchase_id)
          LEFT JOIN suppliers s ON s.id = pu.supplier_id
          ORDER BY sl.purchased_at DESC, sl.id DESC'
     )->fetchAll();
@@ -142,12 +148,30 @@ function fetchBatchProfitRows(PDO $pdo, ?string $from = null, ?string $to = null
             ? round((float) $lot['total_cost'], 2)
             : round((float) $lot['quantity_original'] * (float) $lot['buying_price'], 2);
 
+        $startedQty = round((float) $lot['quantity_original'], 2);
         $remaining = round((float) $lot['quantity_remaining'], 2);
         $remainingValue = round($remaining * (float) $lot['buying_price'], 2);
+        $goneQty = round(max(0, $startedQty - $remaining), 2);
+
+        // Leakage: kg that left stock beyond billed sales (over-pours / giveaways).
+        // Example: started 100 kg, sold billed 80 kg, left 0 → leakage 20 kg.
+        $leakageKg = round(max(0, $goneQty - $soldQty), 2);
+        $buyPerUnit = (float) $lot['buying_price'];
+        $leakageCost = $leakageKg > 0 && $buyPerUnit > 0
+            ? round($leakageKg * $buyPerUnit, 2)
+            : ($startedQty > 0 && $leakageKg > 0
+                ? round($invested * ($leakageKg / $startedQty), 2)
+                : 0.0);
 
         $realizedGp = round($soldRevenue - $soldCost, 2);
         $netAfterShrink = round($realizedGp - $shrinkCost, 2);
         $gpPct = $soldRevenue > 0 ? ($realizedGp / $soldRevenue) * 100 : 0.0;
+
+        // Money profit: ignore billed-kg accuracy. Cost used = invested − leftover book value.
+        $costConsumed = round(max(0, $invested - $remainingValue), 2);
+        $moneyGp = round($soldRevenue - $costConsumed, 2);
+        $moneyGpPct = $soldRevenue > 0 ? ($moneyGp / $soldRevenue) * 100 : 0.0;
+        $moneyGpAfterLeakage = round($moneyGp - $shrinkCost, 2);
 
         $isClosed = !empty($lot['closed_at']) || $remaining < LOT_NONE_THRESHOLD;
         $status = 'Open';
@@ -167,6 +191,8 @@ function fetchBatchProfitRows(PDO $pdo, ?string $from = null, ?string $to = null
         $rows[] = [
             'id' => $lotId,
             'batch_label' => $batchLabel,
+            'purchase_batch_label' => $lot['purchase_batch_label'] ?? null,
+            'purchase_total' => isset($lot['purchase_total']) ? (float) $lot['purchase_total'] : null,
             'mill_name' => $lot['mill_name'] ?? null,
             'product_name' => $lot['product_name'],
             'product_type' => $lot['product_type'],
@@ -177,11 +203,18 @@ function fetchBatchProfitRows(PDO $pdo, ?string $from = null, ?string $to = null
             'lot_kind' => $lotKind,
             'buying_price' => (float) $lot['buying_price'],
             'invested' => $invested,
+            'started_qty' => $startedQty,
             'sold_revenue' => $soldRevenue,
             'sold_cost' => $soldCost,
             'sold_qty' => $soldQty,
             'realized_gp' => $realizedGp,
             'gp_pct' => $gpPct,
+            'cost_consumed' => $costConsumed,
+            'money_gp' => $moneyGp,
+            'money_gp_pct' => $moneyGpPct,
+            'money_gp_after_leakage' => $moneyGpAfterLeakage,
+            'leakage_kg' => $leakageKg,
+            'leakage_cost' => $leakageCost,
             'shrink_cost' => $shrinkCost,
             'shrink_qty' => $shrinkQty,
             'net_after_shrink' => $netAfterShrink,

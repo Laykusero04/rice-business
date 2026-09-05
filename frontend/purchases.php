@@ -12,11 +12,20 @@ $from = trim($_GET['from'] ?? '');
 $to = trim($_GET['to'] ?? '');
 
 $sql = 'SELECT p.*, s.name AS supplier_name,
+               pr.name AS for_product_name,
                (SELECT COUNT(*) FROM purchase_items pi WHERE pi.purchase_id = p.id) AS item_count
         FROM purchases p
         INNER JOIN suppliers s ON s.id = p.supplier_id
+        LEFT JOIN products pr ON pr.id = p.for_product_id
         WHERE 1=1';
 $params = [];
+
+try {
+    require_once __DIR__ . '/../backend/stock_lots.php';
+    ensurePurchaseForProductColumn($pdo);
+} catch (Throwable $e) {
+    // continue; column ensure best-effort
+}
 
 if ($search !== '') {
     $sql .= ' AND s.name LIKE ?';
@@ -64,7 +73,7 @@ require __DIR__ . '/includes/header.php';
 <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
   <div>
     <h1 class="h3 mb-1">Purchase History</h1>
-    <p class="text-muted mb-0">All stock-in records from suppliers.</p>
+    <p class="text-muted mb-0">Buy records with batch names — link sell stock on each purchase to track profit.</p>
   </div>
   <a href="purchase_new.php" class="btn btn-rice">
     <i class="bi bi-plus-lg"></i> New Purchase
@@ -106,9 +115,10 @@ require __DIR__ . '/includes/header.php';
       <tr>
         <th>#</th>
         <th>Date</th>
+        <th>Batch</th>
         <th>Supplier</th>
+        <th>For product</th>
         <th>Paid with</th>
-        <th class="text-end">Items</th>
         <th class="text-end">Total</th>
         <th class="text-end">Actions</th>
       </tr>
@@ -116,14 +126,16 @@ require __DIR__ . '/includes/header.php';
     <tbody>
       <?php if (count($purchases) === 0): ?>
         <tr>
-          <td colspan="7" class="text-center text-muted py-4">No purchases yet.</td>
+          <td colspan="8" class="text-center text-muted py-4">No purchases yet.</td>
         </tr>
       <?php else: ?>
         <?php foreach ($purchases as $purchase): ?>
           <tr>
             <td><?= (int) $purchase['id'] ?></td>
             <td><?= htmlspecialchars($purchase['purchase_date']) ?></td>
-            <td class="fw-semibold"><?= htmlspecialchars($purchase['supplier_name']) ?></td>
+            <td class="fw-semibold"><?= htmlspecialchars(trim((string) ($purchase['batch_label'] ?? '')) ?: '—') ?></td>
+            <td><?= htmlspecialchars($purchase['supplier_name']) ?></td>
+            <td class="small"><?= htmlspecialchars($purchase['for_product_name'] ?? '—') ?></td>
             <td>
               <?php
                 $paymentSource = $purchase['payment_source'] ?? 'business';
@@ -134,10 +146,9 @@ require __DIR__ . '/includes/header.php';
                 <span class="text-muted small"><?= htmlspecialchars($paymentSourceLabels[$paymentSource]) ?></span>
               <?php endif; ?>
             </td>
-            <td class="text-end"><?= (int) $purchase['item_count'] ?></td>
             <td class="text-end">₱<?= number_format((float) $purchase['total'], 2) ?></td>
             <td class="text-end text-nowrap">
-              <a href="purchase_view.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-sm btn-outline-primary">View</a>
+              <a href="purchase_view.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-sm btn-outline-primary">View / profit</a>
               <a href="purchase_new.php?id=<?= (int) $purchase['id'] ?>" class="btn btn-sm btn-outline-secondary">Edit</a>
             </td>
           </tr>

@@ -98,13 +98,13 @@ require __DIR__ . '/includes/header.php';
   <div>
     <h1 class="h3 mb-1">Inventory</h1>
     <p class="text-muted mb-0">
-      Batches are your deliveries / mixes. LOW / NONE are estimates only — they do not change costing.
-      Use <strong>Correct stock</strong> when the shelf and the system disagree.
+      Batches and stock are what you sell. Add them here (or on Products) after you mix —
+      <a href="purchase_new.php">Purchases</a> only record what you bought and the cost.
     </p>
   </div>
   <div class="d-flex flex-wrap gap-2">
-    <a href="mix.php" class="btn btn-outline-secondary">
-      <i class="bi bi-intersect"></i> Mix Rice
+    <a href="purchase_new.php" class="btn btn-outline-secondary">
+      <i class="bi bi-bag-plus"></i> New Purchase
     </a>
     <a href="reports.php?tab=batch" class="btn btn-outline-secondary">
       <i class="bi bi-graph-up"></i> By lot / batch
@@ -194,7 +194,7 @@ require __DIR__ . '/includes/header.php';
           <tbody>
             <?php if (count($openLots) === 0): ?>
               <tr>
-                <td colspan="6" class="text-center text-muted">No open batches. Buy stock via Purchases or Mix Rice.</td>
+                <td colspan="6" class="text-center text-muted">No open batches. Add stock with Correct stock / Adjust, or set stock on a product.</td>
               </tr>
             <?php else: ?>
               <?php foreach ($openLots as $lot): ?>
@@ -213,7 +213,6 @@ require __DIR__ . '/includes/header.php';
                   }
                   $batchNote = trim((string) ($lot['notes'] ?? ''));
                   $millName = trim((string) ($lot['mill_name'] ?? ''));
-                  $lotKind = (string) ($lot['lot_kind'] ?? 'purchase');
                   $remaining = round((float) $lot['quantity_remaining'], 2);
                   $lotNone = isLotUnsalable($remaining);
                   $lotLow = isLotLow($remaining);
@@ -222,15 +221,12 @@ require __DIR__ . '/includes/header.php';
                 <tr class="<?= $lotNone ? 'table-secondary' : ($lotLow ? 'table-warning' : '') ?>">
                   <td class="fw-semibold"><?= htmlspecialchars($lot['product_name']) ?></td>
                   <td class="small">
-                    <?php if ($lotKind === 'mix'): ?>
-                      <span class="badge text-bg-info">MIX</span>
-                    <?php endif; ?>
                     <?php if ($lotNone): ?>
                       <span class="badge text-bg-dark">NONE</span>
                     <?php elseif ($lotLow): ?>
                       <span class="badge text-bg-warning">LOW</span>
                     <?php endif; ?>
-                    <?= $batchNote !== '' ? htmlspecialchars($batchNote) : '—' ?>
+                    <span class="fw-semibold"><?= $batchNote !== '' ? htmlspecialchars($batchNote) : '—' ?></span>
                     <?php if ($millName !== ''): ?>
                       <div class="text-muted"><?= htmlspecialchars($millName) ?></div>
                     <?php endif; ?>

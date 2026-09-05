@@ -80,15 +80,10 @@ foreach ($lotsByProduct as $pid => $lots) {
     foreach ($lots as $lot) {
         $remaining = round((float) $lot['quantity_remaining'], 2);
         $lotId = (int) $lot['id'];
-        // Hide unsalable crumbs, unless they are already on this sale
-        if (isLotUnsalable($remaining) && !in_array($lotId, $saleLotIds, true)) {
-            continue;
-        }
         $sellable[] = [
             'id' => $lotId,
             'label' => formatLotLabel($lot),
             'remaining' => $remaining,
-            'low' => isLotLow($remaining),
         ];
     }
     if (count($sellable) > 0) {
@@ -99,12 +94,6 @@ foreach ($lotsByProduct as $pid => $lots) {
 $riceProducts = [];
 $otherProducts = [];
 foreach ($products as $p) {
-    $pid = (int) $p['id'];
-    $hasLots = isset($lotsForJs[(string) $pid]) && count($lotsForJs[(string) $pid]) > 0;
-    $onSale = in_array($pid, $saleProductIds, true);
-    if (!$hasLots && !$onSale) {
-        continue;
-    }
     if (($p['product_type'] ?? 'RICE') === 'RICE') {
         $riceProducts[] = $p;
     } else {
@@ -113,7 +102,7 @@ foreach ($products as $p) {
 }
 
 $hasSellable = count($riceProducts) + count($otherProducts) > 0;
-$showForm = $isEdit ? count($products) > 0 : $hasSellable;
+$showForm = count($products) > 0;
 
 $flash = '';
 $flashType = 'danger';
@@ -122,11 +111,11 @@ if (isset($_GET['error'])) {
     $flash = match ($_GET['error']) {
         'required' => 'Sale date is required.',
         'customer' => 'Enter the borrower name for walk-in utang, or select a customer.',
-        'items' => 'Add at least one valid product line and choose a stock batch.',
-        'stock' => 'Not enough stock for '
+        'items' => 'Add at least one valid product line and choose a batch.',
+        'stock' => 'Could not save sale for '
             . htmlspecialchars($_GET['product'] ?? 'selected product')
             . '.',
-        'lot' => 'Choose a valid stock batch for each item.',
+        'lot' => 'Choose a batch for each item. Add a batch on Products if none exists.',
         'save' => $isEdit ? 'Could not update the sale. Please try again.' : 'Could not save the sale. Please try again.',
         default => 'Something went wrong.',
     };
@@ -154,9 +143,10 @@ require __DIR__ . '/includes/header.php';
     <?php else: ?>
       <h1 class="h3 mb-1">New Sale</h1>
       <p class="text-muted mb-0">
-        Just buying? Leave customer as walk-in. Use Lend only for utang.
-        Qty is in kg (0.01) or whole sacks. <strong>By kg</strong> uses the small-kg sell price;
-        <strong>By sack</strong> uses the whole-sack sell price (no scoop waste). Batches under 0.05 kg are hidden.
+        Pick product + <strong>batch</strong>.
+        <strong>By sack</strong> = exact 25 kg.
+        <strong>By kg</strong> = approximate OK — use a higher ₱/kg than sack so small over-pours still profit.
+        Profit shows on <a href="reports.php?tab=batch">Reports → By lot / batch</a>.
       </p>
     <?php endif; ?>
   </div>
@@ -177,13 +167,8 @@ require __DIR__ . '/includes/header.php';
 
 <?php if (!$showForm): ?>
   <div class="alert alert-warning">
-    <?php if ($isEdit): ?>
-      Add at least one active <a href="products.php">product</a> before editing a sale.
-    <?php else: ?>
-      No products with stock batches to sell.
-      Add stock via <a href="purchase_new.php">New Purchase</a>, or create a
-      <a href="products.php">product</a> first.
-    <?php endif; ?>
+    Add at least one active <a href="products.php">product</a> before creating a sale.
+    Then add a <strong>batch</strong> on that product so you can pick it here.
   </div>
 <?php else: ?>
   <form method="POST" action="/rice-business/backend/sale_save.php" id="saleForm" class="bg-white rounded shadow-sm p-3 p-md-4">
@@ -320,22 +305,23 @@ require __DIR__ . '/includes/header.php';
                   if ($kgPerSack <= 0) {
                       $kgPerSack = 25;
                   }
-                  $sackSell = isset($product['selling_price_sack']) && $product['selling_price_sack'] !== null
+                  $hasSackPrice = isset($product['selling_price_sack']) && $product['selling_price_sack'] !== null
+                    && (float) $product['selling_price_sack'] > 0;
+                  $sackSell = $hasSackPrice
                     ? (float) $product['selling_price_sack']
-                    : round((float) $product['selling_price'] * $kgPerSack, 2);
+                    : 0;
                 ?>
                 <option
                   value="<?= (int) $product['id'] ?>"
                   data-product-type="RICE"
                   data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
                   data-selling-price-sack="<?= htmlspecialchars(number_format($sackSell, 2, '.', '')) ?>"
+                  data-has-sack-price="<?= $hasSackPrice ? '1' : '0' ?>"
                   data-kg-per-sack="<?= htmlspecialchars(number_format($kgPerSack, 2, '.', '')) ?>"
-                  data-stock="<?= htmlspecialchars(number_format($product['available_stock'], 2, '.', '')) ?>"
                   data-unit="kg"
                   data-name="<?= htmlspecialchars($product['name'], ENT_QUOTES) ?>"
                 >
                   <?= htmlspecialchars($product['name']) ?>
-                  (<?= number_format((float) $product['available_stock'], 2) ?> kg)
                 </option>
               <?php endforeach; ?>
             </optgroup>
@@ -348,12 +334,10 @@ require __DIR__ . '/includes/header.php';
                   value="<?= (int) $product['id'] ?>"
                   data-product-type="GROCERY"
                   data-selling-price="<?= htmlspecialchars($product['selling_price']) ?>"
-                  data-stock="<?= htmlspecialchars(number_format($product['available_stock'], 2, '.', '')) ?>"
                   data-unit="<?= htmlspecialchars($unit) ?>"
                   data-name="<?= htmlspecialchars($product['name'], ENT_QUOTES) ?>"
                 >
                   <?= htmlspecialchars($product['name']) ?>
-                  (<?= number_format((float) $product['available_stock'], $unit === 'pc' ? 0 : 2) ?> <?= htmlspecialchars($unit) ?>)
                 </option>
               <?php endforeach; ?>
             </optgroup>
@@ -364,6 +348,7 @@ require __DIR__ . '/includes/header.php';
           <button type="button" class="btn btn-outline-secondary btn-mode btn-mode-sack d-none" data-mode="sack">By sack</button>
           <button type="button" class="btn btn-outline-secondary btn-mode" data-mode="amount">By ₱ amount</button>
         </div>
+        <div class="form-text mt-1 sale-mode-hint">By kg: enter billed kg (approximate OK). Use higher ₱/kg than sack.</div>
       </td>
       <td>
         <select class="form-select lot-select" name="stock_lot_id[]" required>
@@ -526,24 +511,39 @@ require __DIR__ . '/includes/header.php';
       }
 
       function updateModeButtons() {
+        const option = getSelectedOption();
+        const hasSack = option && option.dataset.hasSackPrice === '1';
         if (sackModeBtn) {
-          sackModeBtn.classList.toggle('d-none', !isRice());
+          sackModeBtn.classList.toggle('d-none', !isRice() || !hasSack);
         }
-        if (!isRice() && entryMode === 'sack') {
+        if ((!isRice() || !hasSack) && entryMode === 'sack') {
           setEntryMode('qty', true);
         }
       }
 
       function applyUnitRules() {
+        const modeHint = row.querySelector('.sale-mode-hint');
         if (entryMode === 'sack') {
-          qtyHint.textContent = 'sack';
+          qtyHint.textContent = 'sack (exact 25 kg)';
           priceHint.textContent = 'per sack';
           qtyInput.step = '0.01';
           qtyInput.min = '0.01';
+          if (modeHint) {
+            modeHint.textContent = 'By sack: exact weight. Use sack sell price.';
+          }
           return;
         }
+        if (entryMode === 'amount') {
+          if (modeHint) {
+            modeHint.textContent = 'By ₱: customer pays this amount; kg is estimated from price.';
+          }
+        } else if (modeHint) {
+          modeHint.textContent = isRice()
+            ? 'By kg: billed weight can be approximate. Price higher than sack ₱/kg to cover small over-pours.'
+            : 'Enter quantity and unit price.';
+        }
         if (entryMode === 'qty') {
-          qtyHint.textContent = getUnit();
+          qtyHint.textContent = isRice() ? 'kg (approx OK)' : getUnit();
         }
         priceHint.textContent = 'per ' + getUnit();
         if (getUnit() === 'pc') {
@@ -560,36 +560,11 @@ require __DIR__ . '/includes/header.php';
 
       function applyLotMax() {
         const lotOption = lotSelect.selectedOptions[0];
-        if (lotOption && lotOption.dataset.remaining) {
-          const remKg = Math.round(parseFloat(lotOption.dataset.remaining) * 100) / 100;
-          if (entryMode === 'sack') {
-            const kgPerSack = getKgPerSack();
-            const remSacks = Math.round((remKg / kgPerSack) * 100) / 100;
-            qtyInput.max = String(remSacks);
-            lotHint.textContent = remKg < 1
-              ? 'LOW — only ' + remKg.toFixed(2) + ' kg left (~' + remSacks.toFixed(2) + ' sack)'
-              : 'Up to ' + remSacks.toFixed(2) + ' sack (' + remKg.toFixed(2) + ' kg) in this batch';
-            const currentQty = parseFloat(qtyInput.value) || 0;
-            if (currentQty > remSacks + 0.0001) {
-              qtyInput.value = remSacks.toFixed(2);
-              updateTotalDisplay();
-            }
-          } else {
-            qtyInput.max = String(remKg);
-            lotHint.textContent = remKg < 1
-              ? 'LOW — only ' + remKg.toFixed(2) + ' ' + getUnit() + ' left in this batch'
-              : 'Up to ' + remKg.toFixed(2) + ' ' + getUnit() + ' in this batch';
-            const currentQty = parseFloat(qtyInput.value) || 0;
-            if (entryMode !== 'amount' && currentQty > remKg + 0.0001) {
-              qtyInput.value = remKg.toFixed(2);
-              if (entryMode === 'qty') {
-                updateTotalDisplay();
-              }
-            }
-          }
+        qtyInput.removeAttribute('max');
+        if (lotOption && lotOption.value) {
+          lotHint.textContent = 'Batch selected — enter kg freely (system stock is approximate).';
         } else {
-          qtyInput.removeAttribute('max');
-          lotHint.textContent = 'Priced batch (buy cost)';
+          lotHint.textContent = 'Pick a batch for this product';
         }
       }
 
@@ -601,14 +576,13 @@ require __DIR__ . '/includes/header.php';
 
         const placeholder = document.createElement('option');
         placeholder.value = '';
-        placeholder.textContent = lots.length ? 'Select batch' : 'No batch available';
+        placeholder.textContent = lots.length ? 'Select batch' : 'No batch — add one on Products';
         lotSelect.appendChild(placeholder);
 
         lots.forEach(function (lot) {
           const opt = document.createElement('option');
           opt.value = String(lot.id);
           opt.textContent = lot.label;
-          opt.dataset.remaining = String(lot.remaining);
           lotSelect.appendChild(opt);
         });
 

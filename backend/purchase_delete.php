@@ -30,26 +30,31 @@ try {
     }
 
     $itemsStmt = $pdo->prepare(
-        'SELECT pi.id, pi.product_id, pi.quantity, pr.name
+        'SELECT pi.id, pi.product_id, pi.quantity,
+                COALESCE(pi.item_name, pr.name, \'item\') AS name
          FROM purchase_items pi
-         INNER JOIN products pr ON pr.id = pi.product_id
+         LEFT JOIN products pr ON pr.id = pi.product_id
          WHERE pi.purchase_id = ?'
     );
     $itemsStmt->execute([$id]);
     $items = $itemsStmt->fetchAll();
 
-    // Only allow delete if purchase batches were not sold yet
+    // Legacy purchases may still have stock lots / product stock.
     reversePurchaseLots($pdo, $items);
 
     $reverseStock = $pdo->prepare(
         'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
     );
     foreach ($items as $item) {
-        $reverseStock->execute([
-            (float) $item['quantity'],
-            (int) $item['product_id'],
-            (float) $item['quantity'],
-        ]);
+        $productId = (int) ($item['product_id'] ?? 0);
+        if ($productId <= 0) {
+            continue;
+        }
+        $qty = (float) $item['quantity'];
+        if ($qty <= 0) {
+            continue;
+        }
+        $reverseStock->execute([$qty, $productId, $qty]);
         if ($reverseStock->rowCount() === 0) {
             throw new RuntimeException('stock:' . $item['name']);
         }

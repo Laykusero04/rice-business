@@ -22,12 +22,12 @@ $supplierId = (int) ($_POST['supplier_id'] ?? 0);
 $purchaseDate = trim($_POST['purchase_date'] ?? '');
 $paymentSource = trim($_POST['payment_source'] ?? 'business');
 $notes = trim($_POST['notes'] ?? '');
-$productIds = $_POST['product_id'] ?? [];
+$itemNames = $_POST['product_name'] ?? [];
 $qtyList = $_POST['quantity'] ?? [];
 $unitPrices = $_POST['unit_price'] ?? [];
-$batchLabels = $_POST['batch_label'] ?? [];
-$millNames = $_POST['mill_name'] ?? [];
-$weighedKgs = $_POST['weighed_kg'] ?? [];
+$kgPerSackList = $_POST['kg_per_sack'] ?? [];
+$purchaseBatch = trim((string) ($_POST['purchase_batch'] ?? ''));
+$forProductId = (int) ($_POST['for_product_id'] ?? 0);
 
 if ($supplierId <= 0 || $purchaseDate === '') {
     header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=required');
@@ -39,7 +39,7 @@ if (!in_array($paymentSource, $allowedPaymentSources, true)) {
     $paymentSource = 'business';
 }
 
-if (!is_array($productIds) || count($productIds) === 0) {
+if (!is_array($itemNames) || count($itemNames) === 0) {
     header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=items');
     exit;
 }
@@ -47,7 +47,47 @@ if (!is_array($productIds) || count($productIds) === 0) {
 $user = currentUser();
 $notes = $notes !== '' ? $notes : null;
 
+/**
+ * Undo stock that older purchases may have pushed into products (legacy only).
+ */
+function reverseLegacyPurchaseStock(PDO $pdo, int $purchaseId): void
+{
+    $oldItemsStmt = $pdo->prepare(
+        'SELECT pi.id, pi.product_id, pi.quantity,
+                COALESCE(pi.item_name, pr.name, \'item\') AS name
+         FROM purchase_items pi
+         LEFT JOIN products pr ON pr.id = pi.product_id
+         WHERE pi.purchase_id = ?'
+    );
+    $oldItemsStmt->execute([$purchaseId]);
+    $oldItems = $oldItemsStmt->fetchAll();
+
+    reversePurchaseLots($pdo, $oldItems);
+
+    $reverseStock = $pdo->prepare(
+        'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
+    );
+    foreach ($oldItems as $oldItem) {
+        $productId = (int) ($oldItem['product_id'] ?? 0);
+        if ($productId <= 0) {
+            continue;
+        }
+        $qty = (float) $oldItem['quantity'];
+        if ($qty <= 0) {
+            continue;
+        }
+        $reverseStock->execute([$qty, $productId, $qty]);
+        if ($reverseStock->rowCount() === 0) {
+            throw new RuntimeException('stock:' . $oldItem['name']);
+        }
+    }
+
+    $pdo->prepare('DELETE FROM stock_movements WHERE reference = ?')
+        ->execute(['PURCHASE-' . $purchaseId]);
+}
+
 try {
+    ensurePurchaseForProductColumn($pdo);
     $pdo->beginTransaction();
 
     $checkSupplier = $pdo->prepare('SELECT id, name FROM suppliers WHERE id = ?');
@@ -57,7 +97,6 @@ try {
         throw new RuntimeException('supplier');
     }
 
-    $originalProductIds = [];
     if ($isEdit) {
         $existingStmt = $pdo->prepare('SELECT * FROM purchases WHERE id = ? FOR UPDATE');
         $existingStmt->execute([$purchaseId]);
@@ -65,112 +104,39 @@ try {
             throw new RuntimeException('missing');
         }
 
-        $oldItemsStmt = $pdo->prepare(
-            'SELECT pi.id, pi.product_id, pi.quantity, pr.name
-             FROM purchase_items pi
-             INNER JOIN products pr ON pr.id = pi.product_id
-             WHERE pi.purchase_id = ?'
-        );
-        $oldItemsStmt->execute([$purchaseId]);
-        $oldItems = $oldItemsStmt->fetchAll();
-        $originalProductIds = array_map(static fn ($item) => (int) $item['product_id'], $oldItems);
-
-        // Only allow edit if stacks from this purchase were not sold yet
-        reversePurchaseLots($pdo, $oldItems);
-
-        $reverseStock = $pdo->prepare(
-            'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
-        );
-        foreach ($oldItems as $oldItem) {
-            $reverseStock->execute([
-                (float) $oldItem['quantity'],
-                (int) $oldItem['product_id'],
-                (float) $oldItem['quantity'],
-            ]);
-            if ($reverseStock->rowCount() === 0) {
-                throw new RuntimeException('stock:' . $oldItem['name']);
-            }
-        }
-
-        $pdo->prepare('DELETE FROM stock_movements WHERE reference = ?')
-            ->execute(['PURCHASE-' . $purchaseId]);
+        reverseLegacyPurchaseStock($pdo, $purchaseId);
         $pdo->prepare('DELETE FROM purchase_items WHERE purchase_id = ?')
             ->execute([$purchaseId]);
     }
 
-    $checkProduct = $pdo->prepare(
-        'SELECT id, name, product_type, unit, kg_per_sack, status FROM products WHERE id = ? FOR UPDATE'
-    );
-
     $items = [];
     $total = 0.0;
 
-    for ($i = 0; $i < count($productIds); $i++) {
-        $productId = (int) ($productIds[$i] ?? 0);
+    for ($i = 0; $i < count($itemNames); $i++) {
+        $itemName = trim((string) ($itemNames[$i] ?? ''));
         $qty = (float) ($qtyList[$i] ?? 0);
         $unitPrice = (float) ($unitPrices[$i] ?? 0);
-        $batchLabel = trim((string) ($batchLabels[$i] ?? ''));
-        $millName = trim((string) ($millNames[$i] ?? ''));
-        $weighedRaw = trim((string) ($weighedKgs[$i] ?? ''));
-        $weighedKg = $weighedRaw !== '' ? (float) $weighedRaw : null;
+        $kgPerSack = (float) ($kgPerSackList[$i] ?? 25);
 
-        if ($productId <= 0 || $qty <= 0 || $unitPrice < 0) {
+        if ($itemName === '' || $qty <= 0 || $unitPrice < 0) {
             continue;
         }
 
-        $checkProduct->execute([$productId]);
-        $product = $checkProduct->fetch();
-        if (
-            !$product
-            || (
-                ($product['status'] ?? 'active') !== 'active'
-                && !($isEdit && in_array($productId, $originalProductIds, true))
-            )
-        ) {
-            throw new RuntimeException('product');
-        }
-
-        $productType = $product['product_type'] ?? 'RICE';
-        $unit = $product['unit'] ?? 'kg';
-        $kgPerSack = (float) ($product['kg_per_sack'] ?? 25);
         if ($kgPerSack <= 0) {
             $kgPerSack = 25;
         }
+        $kgPerSack = round($kgPerSack, 2);
 
-        if ($productType === 'RICE') {
-            $quantityStock = round($qty * $kgPerSack, 2);
-            $buyingPriceStored = round($unitPrice / $kgPerSack, 2);
-            $subtotal = round($qty * $unitPrice, 2);
-            if ($weighedKg !== null && $weighedKg > 0) {
-                $quantityStock = round($weighedKg, 2);
-                $buyingPriceStored = round($subtotal / $quantityStock, 2);
-            }
-        } else {
-            if ($unit === 'pc') {
-                $isWhole = abs($qty - round($qty)) < 0.0001;
-                if (!$isWhole) {
-                    throw new RuntimeException('items');
-                }
-            }
-            $quantityStock = round($qty, 2);
-            $buyingPriceStored = round($unitPrice, 2);
-            $subtotal = round($qty * $unitPrice, 2);
-        }
+        $quantityKg = round($qty * $kgPerSack, 2);
+        $buyingPricePerKg = round($unitPrice / $kgPerSack, 2);
+        $subtotal = round($qty * $unitPrice, 2);
 
         $items[] = [
-            'product_id' => $productId,
-            'product_type' => $productType,
-            'unit' => $unit,
-            'qty_input' => $qty,
-            'unit_price_input' => $unitPrice,
+            'item_name' => $itemName,
             'kg_per_sack' => $kgPerSack,
-            'quantity' => $quantityStock,
-            'buying_price' => $buyingPriceStored,
+            'quantity' => $quantityKg,
+            'buying_price' => $buyingPricePerKg,
             'subtotal' => $subtotal,
-            'batch_label' => $batchLabel !== '' ? $batchLabel : null,
-            'mill_name' => $millName !== '' ? $millName : null,
-            'weighed_kg' => ($weighedKg !== null && $weighedKg > 0) ? round($weighedKg, 2) : null,
-            'total_cost' => $subtotal,
         ];
         $total += $subtotal;
     }
@@ -179,12 +145,42 @@ try {
         throw new RuntimeException('items');
     }
 
+    // One batch label for the whole buy — cost record; link sell stock later via this purchase.
+    if ($purchaseBatch !== '') {
+        $batchLabel = $purchaseBatch;
+        if (preg_match('/^Batch-(\d+)$/', $batchLabel, $m)) {
+            $usedNo = (int) $m[1];
+            try {
+                $pdo->prepare(
+                    'UPDATE batch_counters SET next_batch_no = GREATEST(next_batch_no, ?) WHERE id = 1'
+                )->execute([$usedNo + 1]);
+            } catch (PDOException $e) {
+                // counter table may not exist yet
+            }
+        }
+    } else {
+        $batchLabel = allocateNextBatchLabel($pdo);
+    }
+
+    if ($forProductId > 0) {
+        $prodCheck = $pdo->prepare(
+            "SELECT id FROM products WHERE id = ? AND status = 'active' LIMIT 1"
+        );
+        $prodCheck->execute([$forProductId]);
+        if (!$prodCheck->fetch()) {
+            $forProductId = 0;
+        }
+    } else {
+        $forProductId = null;
+    }
+
     $total = round($total, 2);
 
     if ($isEdit) {
         $stmt = $pdo->prepare(
             'UPDATE purchases
-             SET supplier_id = ?, total = ?, purchase_date = ?, payment_source = ?, notes = ?
+             SET supplier_id = ?, total = ?, purchase_date = ?, payment_source = ?, notes = ?,
+                 batch_label = ?, for_product_id = ?
              WHERE id = ?'
         );
         $stmt->execute([
@@ -193,12 +189,15 @@ try {
             $purchaseDate,
             $paymentSource,
             $notes,
+            $batchLabel,
+            $forProductId,
             $purchaseId,
         ]);
     } else {
         $stmt = $pdo->prepare(
-            'INSERT INTO purchases (supplier_id, total, purchase_date, payment_source, notes, user_id)
-             VALUES (?, ?, ?, ?, ?, ?)'
+            'INSERT INTO purchases
+             (supplier_id, total, purchase_date, payment_source, notes, batch_label, for_product_id, user_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
         );
         $stmt->execute([
             $supplierId,
@@ -206,6 +205,8 @@ try {
             $purchaseDate,
             $paymentSource,
             $notes,
+            $batchLabel,
+            $forProductId,
             $user['id'] ?? null,
         ]);
         $purchaseId = (int) $pdo->lastInsertId();
@@ -247,73 +248,26 @@ try {
     }
 
     $itemStmt = $pdo->prepare(
-        'INSERT INTO purchase_items (purchase_id, product_id, quantity, buying_price, subtotal)
-         VALUES (?, ?, ?, ?, ?)'
-    );
-    $stockStmt = $pdo->prepare(
-        'UPDATE products
-         SET stock = stock + ?, buying_price = ?
-         WHERE id = ?'
-    );
-    $movementStmt = $pdo->prepare(
-        'INSERT INTO stock_movements (product_id, type, quantity, reference, notes)
-         VALUES (?, ?, ?, ?, ?)'
+        'INSERT INTO purchase_items
+         (purchase_id, product_id, item_name, quantity, buying_price, subtotal, kg_per_sack)
+         VALUES (?, NULL, ?, ?, ?, ?, ?)'
     );
 
     foreach ($items as $item) {
-        $movementNote = 'Stock in from purchase #' . $purchaseId;
-        if (($item['product_type'] ?? 'RICE') === 'RICE') {
-            $movementNote .= ' (' . number_format((float) $item['qty_input'], 2) . ' sack @ ₱'
-                . number_format((float) $item['unit_price_input'], 2) . ')';
-        } else {
-            $unit = $item['unit'] ?? 'pc';
-            $movementNote .= ' (' . number_format((float) $item['qty_input'], $unit === 'pc' ? 0 : 2) . ' ' . $unit
-                . ' @ ₱' . number_format((float) $item['unit_price_input'], 2) . ' / ' . $unit . ')';
-        }
-
         $itemStmt->execute([
             $purchaseId,
-            $item['product_id'],
+            $item['item_name'],
             $item['quantity'],
             $item['buying_price'],
             $item['subtotal'],
-        ]);
-        $purchaseItemId = (int) $pdo->lastInsertId();
-
-        createStockLot(
-            $pdo,
-            (int) $item['product_id'],
-            (float) $item['quantity'],
-            (float) $item['buying_price'],
-            $purchaseDate,
-            $purchaseItemId,
-            $item['batch_label'] ?? ('Purchase #' . $purchaseId),
-            [
-                'total_cost' => (float) $item['total_cost'],
-                'weighed_kg' => $item['weighed_kg'] ?? null,
-                'mill_name' => $item['mill_name'] ?? null,
-                'lot_kind' => 'purchase',
-            ]
-        );
-
-        $stockStmt->execute([
-            $item['quantity'],
-            $item['buying_price'],
-            $item['product_id'],
-        ]);
-
-        $movementStmt->execute([
-            $item['product_id'],
-            'IN',
-            $item['quantity'],
-            'PURCHASE-' . $purchaseId,
-            $movementNote,
+            $item['kg_per_sack'],
         ]);
     }
 
     $pdo->commit();
     $success = $isEdit ? 'updated' : 'created';
     header('Location: /rice-business/frontend/purchase_view.php?id=' . $purchaseId . '&success=' . $success);
+    exit;
 } catch (Throwable $e) {
     if ($pdo->inTransaction()) {
         $pdo->rollBack();
@@ -341,6 +295,5 @@ try {
 
     $code = $message === 'items' ? 'items' : 'save';
     header('Location: ' . $redirectNew . ($isEdit ? '&' : '?') . 'error=' . $code);
+    exit;
 }
-
-exit;

@@ -283,3 +283,51 @@ a:not(.btn):not(.nav-link):not(.dropdown-item):hover {
     display: block;
   }
 }
+
+/* Purchase rice-name combobox */
+.rice-combo {
+  position: relative;
+}
+
+.rice-combo-menu {
+  position: absolute;
+  z-index: 1050;
+  left: 0;
+  right: 0;
+  top: 100%;
+  margin-top: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  background: #fff;
+  border: 1px solid var(--brand-grey-light, #e5e7eb);
+  border-radius: 0.375rem;
+  box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.08);
+  display: none;
+}
+
+.rice-combo-menu.is-open {
+  display: block;
+}
+
+.rice-combo-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.75rem;
+  font-size: 0.925rem;
+  color: inherit;
+}
+
+.rice-combo-item:hover,
+.rice-combo-item.is-active {
+  background: #eff6ff;
+  color: var(--brand-blue-dark, #1e3a8a);
+}
+
+.rice-combo-empty {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  color: var(--brand-grey, #6b7280);
+}

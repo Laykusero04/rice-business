@@ -129,14 +129,48 @@ $sellProducts = $pdo->query(
 
 $defaultProductId = (int) ($purchase['for_product_id'] ?? 0);
 
+// Purchase lines whose names match products but are not stocked yet.
+$matchableItems = [];
+$productByName = [];
+foreach ($sellProducts as $sp) {
+    $productByName[strtolower(trim((string) $sp['name']))] = $sp;
+}
+$linkedItemIds = [];
+foreach ($linkedLots as $lot) {
+    $pi = (int) ($lot['purchase_item_id'] ?? 0);
+    if ($pi > 0) {
+        $linkedItemIds[$pi] = true;
+    }
+}
+foreach ($items as $item) {
+    $itemId = (int) $item['id'];
+    if (isset($linkedItemIds[$itemId])) {
+        continue;
+    }
+    $nameKey = strtolower(trim((string) ($item['product_name'] ?? '')));
+    if ($nameKey === '' || !isset($productByName[$nameKey])) {
+        continue;
+    }
+    $matchableItems[] = $item;
+}
+
 $flash = '';
 $flashType = 'success';
 if (isset($_GET['success'])) {
     $flash = match ($_GET['success']) {
         'created' => 'Purchase saved as batch '
             . htmlspecialchars($batchLabel !== '' ? $batchLabel : '#' . $id)
-            . '. Link sell stock below when you mix.',
+            . '. Item names did not match a product — link sell stock below if this buy is for a mix.',
+        'created_stocked' => 'Purchase saved. Matching products now have sell stock under batch '
+            . htmlspecialchars($batchLabel !== '' ? $batchLabel : '#' . $id)
+            . '.',
         'updated' => 'Purchase updated successfully.',
+        'updated_stocked' => 'Purchase updated and matching products were restocked.',
+        'items_stocked' => 'Added sell stock for '
+            . (int) ($_GET['count'] ?? 0)
+            . ' matching product'
+            . ((int) ($_GET['count'] ?? 0) === 1 ? '' : 's')
+            . '. They now appear in Sales and Products.',
         'batch_added' => 'Sell batch linked to this purchase. Profit updates as you sell.',
         'closed' => 'Batch marked empty. Leftover estimate recorded as write-off / leakage.',
         'writeoff' => 'Leftover written off as leakage loss.',
@@ -156,6 +190,7 @@ if (isset($_GET['error'])) {
         'save' => 'Could not save the sell batch.',
         'invalid' => 'Check the values you entered.',
         'lot' => 'Could not mark that batch empty.',
+        'no_match' => 'No purchase lines match an active product name, or stock was already added.',
         default => 'Something went wrong.',
     };
 }
@@ -184,7 +219,7 @@ require __DIR__ . '/includes/header.php';
       method="POST"
       action="/rice-business/backend/purchase_delete.php"
       class="d-inline"
-      onsubmit="return confirm('Delete this purchase? Linked sell batches stay; only the buy record is removed if allowed.');"
+      onsubmit="return confirm('Delete this purchase and any unused sell batches linked to it?');"
     >
       <input type="hidden" name="id" value="<?= (int) $purchase['id'] ?>">
       <button type="submit" class="btn btn-outline-danger">Delete</button>
@@ -394,7 +429,23 @@ require __DIR__ . '/includes/header.php';
       </table>
     </div>
   <?php else: ?>
-    <div class="alert alert-warning py-2">No sell batch linked yet — profit cannot show until you link one.</div>
+    <div class="alert alert-warning py-2">No sell batch linked yet — profit cannot show until stock is added.</div>
+  <?php endif; ?>
+
+  <?php if (count($matchableItems) > 0): ?>
+    <div class="alert alert-info d-flex flex-wrap justify-content-between align-items-center gap-2">
+      <div>
+        <strong><?= count($matchableItems) ?></strong> purchase line<?= count($matchableItems) === 1 ? '' : 's' ?>
+        match a product (<?= htmlspecialchars(implode(', ', array_map(
+            static fn ($row) => (string) ($row['product_name'] ?? ''),
+            $matchableItems
+        ))) ?>) but are not in stock yet.
+      </div>
+      <form method="POST" action="/rice-business/backend/purchase_link_items.php" class="m-0">
+        <input type="hidden" name="purchase_id" value="<?= (int) $id ?>">
+        <button type="submit" class="btn btn-rice btn-sm">Add stock from items</button>
+      </form>
+    </div>
   <?php endif; ?>
 
   <?php if (count($sellProducts) === 0): ?>

@@ -39,7 +39,7 @@ try {
     $itemsStmt->execute([$id]);
     $items = $itemsStmt->fetchAll();
 
-    // Legacy purchases may still have stock lots / product stock.
+    // Auto-linked lots (purchase_item_id) + product stock from those lines.
     reversePurchaseLots($pdo, $items);
 
     $reverseStock = $pdo->prepare(
@@ -59,6 +59,9 @@ try {
             throw new RuntimeException('stock:' . $item['name']);
         }
     }
+
+    // Manual "Link sell batch" lots (source_purchase_id only).
+    reverseSourcePurchaseLots($pdo, $id);
 
     $pdo->prepare('DELETE FROM stock_movements WHERE reference = ?')
         ->execute(['PURCHASE-' . $id]);

@@ -856,7 +856,8 @@ function createSellBatch(
     ?string $purchasedAt = null,
     float $quantity = 0.0,
     float $totalCost = 0.0,
-    ?int $sourcePurchaseId = null
+    ?int $sourcePurchaseId = null,
+    ?int $purchaseItemId = null
 ): int {
     ensureSourcePurchaseColumn($pdo);
 
@@ -883,15 +884,19 @@ function createSellBatch(
     $sourcePurchaseId = $sourcePurchaseId !== null && $sourcePurchaseId > 0
         ? $sourcePurchaseId
         : null;
+    $purchaseItemId = $purchaseItemId !== null && $purchaseItemId > 0
+        ? $purchaseItemId
+        : null;
 
     $stmt = $pdo->prepare(
         'INSERT INTO stock_lots
          (product_id, purchase_item_id, source_purchase_id, buying_price, quantity_original, quantity_remaining,
           purchased_at, notes, mill_name, total_cost, weighed_kg, lot_kind)
-         VALUES (?, NULL, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, \'opening\')'
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, NULL, \'opening\')'
     );
     $stmt->execute([
         $productId,
+        $purchaseItemId,
         $sourcePurchaseId,
         $buyingPrice,
         $quantity,
@@ -910,4 +915,126 @@ function createSellBatch(
     }
 
     return $lotId;
+}
+
+/**
+ * When purchase line names match active products, create sellable stock for those products.
+ * Skips lines that already have a stock lot (via purchase_item_id).
+ *
+ * @return int Number of sell batches created
+ */
+function linkMatchingPurchaseItemsToStock(
+    PDO $pdo,
+    int $purchaseId,
+    string $batchLabel,
+    string $purchaseDate
+): int {
+    ensureSourcePurchaseColumn($pdo);
+
+    $itemsStmt = $pdo->prepare(
+        'SELECT pi.* FROM purchase_items pi WHERE pi.purchase_id = ? ORDER BY pi.id ASC'
+    );
+    $itemsStmt->execute([$purchaseId]);
+    $items = $itemsStmt->fetchAll();
+
+    $findProduct = $pdo->prepare(
+        "SELECT id FROM products
+         WHERE status = 'active' AND LOWER(TRIM(name)) = LOWER(TRIM(?))
+         LIMIT 1"
+    );
+    $existingLot = $pdo->prepare(
+        'SELECT id FROM stock_lots WHERE purchase_item_id = ? LIMIT 1'
+    );
+    $updateItemProduct = $pdo->prepare(
+        'UPDATE purchase_items SET product_id = ? WHERE id = ?'
+    );
+
+    $created = 0;
+    foreach ($items as $item) {
+        $itemId = (int) $item['id'];
+        $itemName = trim((string) ($item['item_name'] ?? ''));
+        if ($itemName === '') {
+            continue;
+        }
+
+        $existingLot->execute([$itemId]);
+        if ($existingLot->fetch()) {
+            continue;
+        }
+
+        $findProduct->execute([$itemName]);
+        $product = $findProduct->fetch();
+        if (!$product) {
+            continue;
+        }
+
+        $productId = (int) $product['id'];
+        $quantity = round((float) $item['quantity'], 2);
+        $buyingPrice = round((float) $item['buying_price'], 2);
+        $subtotal = round((float) $item['subtotal'], 2);
+        if ($quantity <= 0) {
+            continue;
+        }
+
+        $updateItemProduct->execute([$productId, $itemId]);
+
+        createSellBatch(
+            $pdo,
+            $productId,
+            $buyingPrice,
+            $batchLabel !== '' ? $batchLabel : null,
+            $purchaseDate,
+            $quantity,
+            $subtotal,
+            $purchaseId,
+            $itemId
+        );
+        $created++;
+    }
+
+    return $created;
+}
+
+/**
+ * Remove unused sell lots that were linked to a purchase via source_purchase_id
+ * (manual "Link sell batch" only — skips lots already tied to purchase_items).
+ */
+function reverseSourcePurchaseLots(PDO $pdo, int $purchaseId): void
+{
+    ensureSourcePurchaseColumn($pdo);
+
+    $find = $pdo->prepare(
+        'SELECT id, product_id, quantity_original, quantity_remaining
+         FROM stock_lots
+         WHERE source_purchase_id = ?
+           AND purchase_item_id IS NULL
+         FOR UPDATE'
+    );
+    $find->execute([$purchaseId]);
+    $lots = $find->fetchAll();
+
+    $delete = $pdo->prepare('DELETE FROM stock_lots WHERE id = ?');
+    $reduceStock = $pdo->prepare(
+        'UPDATE products SET stock = stock - ? WHERE id = ? AND stock >= ?'
+    );
+
+    foreach ($lots as $lot) {
+        $original = round((float) $lot['quantity_original'], 2);
+        $remaining = round((float) $lot['quantity_remaining'], 2);
+
+        if (abs($original - $remaining) > 0.001) {
+            throw new RuntimeException('lot_used');
+        }
+
+        $productId = (int) $lot['product_id'];
+        $qty = $remaining;
+        $delete->execute([(int) $lot['id']]);
+
+        if ($qty > 0 && $productId > 0) {
+            $reduceStock->execute([$qty, $productId, $qty]);
+            if ($reduceStock->rowCount() === 0) {
+                throw new RuntimeException('stock:linked lot');
+            }
+        }
+    }
 }

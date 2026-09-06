@@ -264,8 +264,19 @@ try {
         ]);
     }
 
+    // Item names that match active products become sellable stock automatically.
+    $lotsCreated = linkMatchingPurchaseItemsToStock(
+        $pdo,
+        $purchaseId,
+        $batchLabel,
+        $purchaseDate
+    );
+
     $pdo->commit();
     $success = $isEdit ? 'updated' : 'created';
+    if ($lotsCreated > 0) {
+        $success = $isEdit ? 'updated_stocked' : 'created_stocked';
+    }
     header('Location: /rice-business/frontend/purchase_view.php?id=' . $purchaseId . '&success=' . $success);
     exit;
 } catch (Throwable $e) {

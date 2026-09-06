@@ -81,6 +81,44 @@ $totalRemaining = 0.0;
 $totalLeakageKg = 0.0;
 $totalLeakageCost = 0.0;
 
+// Period-tab defaults (assigned in else below; kept defined for static analysis)
+$salesTotal = 0.0;
+$expenseTotal = 0.0;
+$ownerInvestmentTotal = 0.0;
+$operatingExpensesTotal = 0.0;
+$purchaseTotal = 0.0;
+$cogsTotal = 0.0;
+$grossProfit = 0.0;
+$grossMargin = 0.0;
+$inventoryLossTotal = 0.0;
+$gcashFeeIncome = 0.0;
+$gcashCashinCount = 0;
+$netIncome = 0.0;
+$saleCount = 0;
+$topProducts = [];
+$topOtherProducts = [];
+$profitByVariety = [];
+$profitByGrocery = [];
+$topProfitGrocery = null;
+$groceryStock = [];
+$expensesByCategory = [];
+$inventory = [];
+$lowStockCount = 0;
+$inventoryCostValue = 0.0;
+$inventorySellValue = 0.0;
+$inventoryRiceKg = 0.0;
+$inventoryActiveCount = 0;
+$inventoryGroceryCount = 0;
+$inventoryValueByCategory = [];
+$inventoryPotentialProfit = 0.0;
+$inventoryValueMargin = 0.0;
+$dailyNetIncome = [];
+$bestNetDay = null;
+$worstNetDay = null;
+$avgDailyNet = 0.0;
+$positiveNetDays = 0;
+$negativeNetDays = 0;
+
 if ($tab === 'batch') {
     require_once __DIR__ . '/../backend/batch_profit.php';
     $batchRows = fetchBatchProfitRows($pdo, $from, $to);

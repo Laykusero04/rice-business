@@ -116,12 +116,14 @@ require __DIR__ . '/includes/header.php';
     <?php if ($isEdit): ?>
       <h1 class="h3 mb-1">Edit Purchase #<?= (int) $purchase['id'] ?></h1>
       <p class="text-muted mb-0">
-        Changing items updates the buy record only. Purchases do not change product stock.
+        Lines named like an active product (e.g. RC 160) update that product’s sell stock.
+        Other names stay cost-only until you mix / link.
       </p>
     <?php else: ?>
       <h1 class="h3 mb-1">New Purchase</h1>
       <p class="text-muted mb-0">
-        Give this buy a <strong>batch name</strong>, then later link sell stock to the same purchase so profit is clear.
+        Give this buy a <strong>batch name</strong>. If an item name matches a product, sell stock is added automatically.
+        Use <em>For sell product (mix)</em> when buying raw rice that will be mixed later.
       </p>
     <?php endif; ?>
   </div>
@@ -189,7 +191,7 @@ require __DIR__ . '/includes/header.php';
           placeholder="e.g. Batch-1"
         >
         <div class="form-text">
-          This purchase belongs to this batch. Use the same batch when you add sell stock / check profit.
+          This purchase belongs to this batch. Matching products get the same batch on sell stock.
         </div>
       </div>
       <div class="col-md-4">
